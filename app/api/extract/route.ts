@@ -17,6 +17,11 @@ Process:
 3. When you have enough content, call submitFindings exactly once with the structured summary.
 4. After submitting, write a single closing sentence like "Found 4 projects worth featuring."
 
+If a tool returns ok: false:
+- Surface the failure in your status text so the user sees what went wrong.
+- For PDF failures, restate the exact error message so the user knows to upload a text-based PDF.
+- Still call submitFindings with whatever you can salvage (filename hints, etc.) plus a tagline that says you couldn't read the source.
+
 Tone for tagline and summaries: confident, recruiter-facing, specific. Avoid filler ("passionate about", "team player"). Lead with verbs and numbers.`;
 
 export async function POST(req: Request) {
@@ -95,7 +100,7 @@ export async function POST(req: Request) {
               } else if (r.toolName === "parsePdf" && out?.pages) {
                 send(controller, {
                   type: "status",
-                  text: `Parsed ${out.pages} page${out.pages === 1 ? "" : "s"}.`,
+                  text: `Parsed ${out.pages} page${out.pages === 1 ? "" : "s"} (${out.textLength ?? 0} chars).`,
                 });
               }
             }

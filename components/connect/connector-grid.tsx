@@ -16,6 +16,10 @@ import {
 } from "lucide-react";
 import { readNdjsonStream, type Findings } from "@/lib/extract-client";
 import { FindingsView, NarrationPanel } from "@/components/connect/findings-view";
+import {
+  InventoryPanel,
+  type Inventory,
+} from "@/components/connect/inventory-panel";
 
 type SourceId = "github" | "resume" | "url";
 type Status = "idle" | "uploading" | "extracting" | "done" | "error";
@@ -38,6 +42,10 @@ export function ConnectorGrid() {
   const [url, setUrl] = useState(INITIAL);
   const [urlInput, setUrlInput] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
+
+  const [discoveryLoading, setDiscoveryLoading] = useState(false);
+  const [discoveryError, setDiscoveryError] = useState<string | undefined>();
+  const [inventory, setInventory] = useState<Inventory | undefined>();
 
   const isConnected = (s: SourceState) =>
     s.status === "done" || s.status === "extracting" || s.status === "uploading";
@@ -147,6 +155,54 @@ export function ConnectorGrid() {
     setUrl({ status: "uploading", statuses: [], inputUrl: normalized });
     setUrlInput("");
     void runExtract("url", { url: normalized }, setUrl);
+  }
+
+  async function runDiscovery() {
+    const sources: { source: string; data: Findings }[] = [];
+    if (resume.result) {
+      sources.push({
+        source: resume.filename ? `resume: ${resume.filename}` : "resume",
+        data: resume.result,
+      });
+    }
+    if (url.result) {
+      sources.push({
+        source: url.inputUrl ? `personal URL: ${url.inputUrl}` : "personal URL",
+        data: url.result,
+      });
+    }
+    if (sources.length === 0) {
+      setDiscoveryError("Connect at least one source with extracted findings first.");
+      return;
+    }
+
+    setDiscoveryLoading(true);
+    setDiscoveryError(undefined);
+    setInventory(undefined);
+
+    try {
+      const res = await fetch("/api/discover", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sources }),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        setDiscoveryError(`${res.status}: ${text}`);
+        return;
+      }
+      const data = (await res.json()) as Inventory;
+      setInventory(data);
+      setTimeout(() => {
+        document
+          .getElementById("inventory")
+          ?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }, 100);
+    } catch (err) {
+      setDiscoveryError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDiscoveryLoading(false);
+    }
   }
 
   function toggleGithub() {
@@ -312,25 +368,44 @@ export function ConnectorGrid() {
       <div className="mt-12 flex flex-col items-center gap-3 text-center">
         <button
           type="button"
-          disabled={!hasAnyDone}
+          disabled={!hasAnyDone || discoveryLoading}
+          onClick={runDiscovery}
           className={`inline-flex items-center gap-2 rounded-full px-7 py-3.5 text-sm font-medium transition-all ${
-            hasAnyDone
+            hasAnyDone && !discoveryLoading
               ? "cursor-pointer bg-accent text-accent-foreground shadow-[0_1px_0_rgba(255,255,255,0.08)_inset,0_12px_30px_-12px_rgba(61,45,79,0.65)] hover:opacity-90 active:translate-y-[0.5px]"
               : "cursor-not-allowed bg-accent/30 text-accent-foreground/70"
           }`}
         >
-          Run discovery
-          <ArrowRight className="size-3.5" />
+          {discoveryLoading ? (
+            <>
+              <Loader2 className="size-3.5 animate-spin" />
+              Compiling inventory...
+            </>
+          ) : (
+            <>
+              Run discovery
+              <ArrowRight className="size-3.5" />
+            </>
+          )}
         </button>
         <p className="text-xs text-muted">
           {hasAnyDone ? (
             <>
-              {connectedCount} source{connectedCount === 1 ? "" : "s"} ready. Full discovery agent ships May 4.
+              {connectedCount} source{connectedCount === 1 ? "" : "s"} ready.
+              The agent will rank and rewrite everything in ~10 seconds.
             </>
           ) : (
             <>Add at least one source to begin.</>
           )}
         </p>
+      </div>
+
+      <div id="inventory">
+        <InventoryPanel
+          loading={discoveryLoading}
+          inventory={inventory}
+          error={discoveryError}
+        />
       </div>
     </div>
   );

@@ -84,7 +84,7 @@ export const fetchUrl = tool({
 
 export const parsePdf = tool({
   description:
-    "Download a PDF from a Vercel Blob URL and extract its text. Use for parsing resumes uploaded by the user.",
+    "Download a PDF from a Vercel Blob URL and extract its text. Use for parsing resumes uploaded by the user. Returns ok=false with a specific reason if the PDF has too little extractable text (likely scanned or image-based).",
   inputSchema: z.object({
     blobUrl: z
       .string()
@@ -95,12 +95,46 @@ export const parsePdf = tool({
     try {
       const res = await fetch(blobUrl, { signal: AbortSignal.timeout(20_000) });
       if (!res.ok) {
-        return { ok: false as const, error: `Blob fetch ${res.status}` };
+        return {
+          ok: false as const,
+          error: `Could not download the PDF from Blob (HTTP ${res.status}).`,
+        };
       }
       const buffer = await res.arrayBuffer();
-      const pdf = await getDocumentProxy(new Uint8Array(buffer));
-      const { text, totalPages } = await extractText(pdf, { mergePages: true });
-      const merged = Array.isArray(text) ? text.join("\n") : text;
+      if (buffer.byteLength < 100) {
+        return {
+          ok: false as const,
+          error: "The PDF file appears to be empty or corrupted.",
+        };
+      }
+
+      let totalPages = 0;
+      let merged = "";
+      try {
+        const pdf = await getDocumentProxy(new Uint8Array(buffer));
+        const { text, totalPages: pages } = await extractText(pdf, {
+          mergePages: true,
+        });
+        totalPages = pages;
+        merged = (Array.isArray(text) ? text.join("\n") : text).trim();
+      } catch (parseErr) {
+        return {
+          ok: false as const,
+          error: `Could not parse the PDF (${parseErr instanceof Error ? parseErr.message : "unknown error"}). Try saving as a text-based PDF rather than a scan.`,
+        };
+      }
+
+      if (merged.length < 80) {
+        return {
+          ok: false as const,
+          pages: totalPages,
+          textLength: merged.length,
+          error:
+            "Extracted only " +
+            merged.length +
+            " characters. This PDF is likely scanned or image-based. Tell the user to upload a text-based PDF (export from Google Docs / Word as PDF, not a photograph or scan).",
+        };
+      }
 
       return {
         ok: true as const,
