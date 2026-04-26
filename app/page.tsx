@@ -5,6 +5,7 @@ import { SiteFooter } from "@/components/site-footer";
 import { MayaCard } from "@/components/portfolio-examples/maya-card";
 import { JordanCard } from "@/components/portfolio-examples/jordan-card";
 import { RiyaCard } from "@/components/portfolio-examples/riya-card";
+import { signInWithGoogle } from "@/app/actions";
 
 export default function Home() {
   return (
@@ -55,13 +56,15 @@ function Hero() {
             className="reveal mt-10 flex flex-wrap items-center gap-x-6 gap-y-4"
             style={{ animationDelay: "0.45s" }}
           >
-            <button
-              type="button"
-              className="inline-flex items-center gap-2 rounded-full bg-accent px-6 py-3 text-sm font-medium text-accent-foreground shadow-[0_1px_0_rgba(255,255,255,0.08)_inset,0_12px_30px_-12px_rgba(61,45,79,0.65)] transition-all hover:opacity-90 active:translate-y-[0.5px]"
-            >
-              Build mine
-              <ArrowRight className="size-3.5" />
-            </button>
+            <form action={signInWithGoogle}>
+              <button
+                type="submit"
+                className="inline-flex items-center gap-2 rounded-full bg-accent px-6 py-3 text-sm font-medium text-accent-foreground shadow-[0_1px_0_rgba(255,255,255,0.08)_inset,0_12px_30px_-12px_rgba(61,45,79,0.65)] transition-all hover:opacity-90 active:translate-y-[0.5px]"
+              >
+                Build mine
+                <ArrowRight className="size-3.5" />
+              </button>
+            </form>
             <a
               href="#examples"
               className="group inline-flex items-center gap-1.5 text-sm text-foreground transition-colors hover:text-accent"
@@ -165,13 +168,15 @@ function ClosingCTA() {
           like.
         </p>
         <div className="mt-10 flex justify-center">
-          <button
-            type="button"
-            className="inline-flex items-center gap-2 rounded-full bg-accent px-7 py-3.5 text-sm font-medium text-accent-foreground shadow-[0_1px_0_rgba(255,255,255,0.08)_inset,0_12px_30px_-12px_rgba(61,45,79,0.65)] transition-all hover:opacity-90 active:translate-y-[0.5px]"
-          >
-            Build mine
-            <ArrowRight className="size-3.5" />
-          </button>
+          <form action={signInWithGoogle}>
+            <button
+              type="submit"
+              className="inline-flex items-center gap-2 rounded-full bg-accent px-7 py-3.5 text-sm font-medium text-accent-foreground shadow-[0_1px_0_rgba(255,255,255,0.08)_inset,0_12px_30px_-12px_rgba(61,45,79,0.65)] transition-all hover:opacity-90 active:translate-y-[0.5px]"
+            >
+              Build mine
+              <ArrowRight className="size-3.5" />
+            </button>
+          </form>
         </div>
       </div>
     </section>
