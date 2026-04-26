@@ -1,5 +1,6 @@
 import { auth } from "@/auth";
 import { generateObject } from "ai";
+import { anthropic } from "@ai-sdk/anthropic";
 import { z } from "zod";
 import type { Findings } from "@/lib/extract-client";
 
@@ -84,7 +85,7 @@ export async function POST(req: Request) {
   const targetRole = body.targetRole ?? "the role they're targeting";
 
   const result = await generateObject({
-    model: "anthropic/claude-sonnet-4.6",
+    model: anthropic("claude-sonnet-4-6"),
     schema: InventorySchema,
     system: `You are ScoutFolio's portfolio-curation agent. Take raw extracted content from multiple sources and produce a recruiter-ready ranked inventory for a student. Be opinionated. Lead with specifics. Avoid filler ("passionate about", "team player", "experienced in"). Write copy that would survive a 6-second resume scan.`,
     prompt: `Build a portfolio inventory for a student targeting ${targetRole}.

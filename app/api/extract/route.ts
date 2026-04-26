@@ -1,5 +1,6 @@
 import { auth } from "@/auth";
 import { streamText, stepCountIs } from "ai";
+import { anthropic } from "@ai-sdk/anthropic";
 import { fetchUrl, parsePdf, submitFindings } from "@/lib/extract-tools";
 
 export const runtime = "nodejs";
@@ -55,7 +56,7 @@ export async function POST(req: Request) {
         let findings: unknown = null;
 
         const result = streamText({
-          model: "anthropic/claude-sonnet-4.6",
+          model: anthropic("claude-sonnet-4-6"),
           system: SYSTEM,
           prompt: userPrompt,
           tools: { fetchUrl, parsePdf, submitFindings },
