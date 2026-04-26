@@ -1,7 +1,7 @@
 import { auth } from "@/auth";
-import { streamText, stepCountIs } from "ai";
+import { streamText, stepCountIs, type ModelMessage } from "ai";
 import { anthropic } from "@ai-sdk/anthropic";
-import { fetchUrl, parsePdf, submitFindings } from "@/lib/extract-tools";
+import { fetchUrl, submitFindings } from "@/lib/extract-tools";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -13,17 +13,13 @@ type ExtractRequest =
 const SYSTEM = `You are ScoutFolio's discovery agent. Your job is to read a source (a personal URL or a resume PDF) and extract portfolio-relevant content for a student building a recruiter-ready personal site.
 
 Process:
-1. Call the fetchUrl or parsePdf tool to retrieve the content.
-2. While you reason out loud, write SHORT user-facing status updates (one short sentence, present-tense, no markdown). Examples: "Fetching the page...", "Found 3 project mentions, pulling details.", "Parsing 2 pages of resume."
-3. When you have enough content, call submitFindings exactly once with the structured summary.
-4. After submitting, write a single closing sentence like "Found 4 projects worth featuring."
+1. For URLs: call the fetchUrl tool to retrieve the page content.
+2. For resume PDFs: the PDF is already attached to your message — read it directly (text, layout, AND images via vision).
+3. While you reason, write SHORT user-facing status updates (one short sentence, present-tense, no markdown). Examples: "Reading the resume top to bottom.", "Found 4 distinct projects, drafting summaries.", "Cross-referencing the work history with project mentions."
+4. When you have enough content, call submitFindings exactly once with the structured summary.
+5. After submitting, write a single closing sentence like "Found 4 projects worth featuring."
 
-If a tool returns ok: false:
-- Surface the failure in your status text so the user sees what went wrong.
-- For PDF failures, restate the exact error message so the user knows to upload a text-based PDF.
-- Still call submitFindings with whatever you can salvage (filename hints, etc.) plus a tagline that says you couldn't read the source.
-
-Tone for tagline and summaries: confident, recruiter-facing, specific. Avoid filler ("passionate about", "team player"). Lead with verbs and numbers.`;
+Tone for tagline and summaries: confident, recruiter-facing, specific. Avoid filler ("passionate about", "team player"). Lead with verbs and outcomes.`;
 
 export async function POST(req: Request) {
   const session = await auth();
@@ -38,10 +34,40 @@ export async function POST(req: Request) {
     return new Response("Invalid JSON", { status: 400 });
   }
 
-  const userPrompt =
+  // Build the user message: text-only for URL, text+PDF for resume.
+  const messages: ModelMessage[] =
     body.source === "url"
-      ? `Extract portfolio content from this URL: ${body.url}`
-      : `Extract portfolio content from this resume PDF (Blob URL: ${body.blobUrl}${body.filename ? `, filename: ${body.filename}` : ""}).`;
+      ? [
+          {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: `Extract portfolio content from this URL: ${body.url}`,
+              },
+            ],
+          },
+        ]
+      : [
+          {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: `Extract portfolio content from the attached resume PDF${body.filename ? ` (filename: ${body.filename})` : ""}. Use vision to read text, layout, headshots, logos, and any visual elements.`,
+              },
+              {
+                type: "file",
+                data: new URL(body.blobUrl),
+                mediaType: "application/pdf",
+              },
+            ],
+          },
+        ];
+
+  // Both branches expose the same tool surface; the system prompt + attached PDF
+  // tell the model when to fetchUrl vs read the file directly.
+  const tools = { fetchUrl, submitFindings };
 
   const encoder = new TextEncoder();
   const send = (controller: ReadableStreamDefaultController, event: object) => {
@@ -51,15 +77,21 @@ export async function POST(req: Request) {
   const stream = new ReadableStream({
     async start(controller) {
       try {
-        send(controller, { type: "status", text: "Connecting to the agent..." });
+        send(controller, {
+          type: "status",
+          text:
+            body.source === "url"
+              ? "Spinning up the agent..."
+              : "Handing the PDF to Claude's vision...",
+        });
 
         let findings: unknown = null;
 
         const result = streamText({
           model: anthropic("claude-sonnet-4-6"),
           system: SYSTEM,
-          prompt: userPrompt,
-          tools: { fetchUrl, parsePdf, submitFindings },
+          messages,
+          tools,
           stopWhen: stepCountIs(8),
           onChunk({ chunk }) {
             if (chunk.type === "text-delta") {
@@ -73,11 +105,6 @@ export async function POST(req: Request) {
                   type: "status",
                   text: `Fetching ${(call.input as { url: string }).url}`,
                 });
-              } else if (call.toolName === "parsePdf") {
-                send(controller, {
-                  type: "status",
-                  text: "Reading the PDF...",
-                });
               } else if (call.toolName === "submitFindings") {
                 findings = (call.input as { [k: string]: unknown }) ?? null;
                 send(controller, {
@@ -87,7 +114,9 @@ export async function POST(req: Request) {
               }
             }
             for (const r of toolResults ?? []) {
-              const out = r.output as { ok?: boolean; error?: string; pages?: number; textLength?: number } | undefined;
+              const out = r.output as
+                | { ok?: boolean; error?: string; textLength?: number }
+                | undefined;
               if (out?.ok === false) {
                 send(controller, {
                   type: "status",
@@ -98,13 +127,14 @@ export async function POST(req: Request) {
                   type: "status",
                   text: `Got ${Math.round(out.textLength / 100) / 10}k chars from the page.`,
                 });
-              } else if (r.toolName === "parsePdf" && out?.pages) {
-                send(controller, {
-                  type: "status",
-                  text: `Parsed ${out.pages} page${out.pages === 1 ? "" : "s"} (${out.textLength ?? 0} chars).`,
-                });
               }
             }
+          },
+          onError({ error }) {
+            send(controller, {
+              type: "status",
+              text: `Model error: ${error instanceof Error ? error.message : String(error)}`,
+            });
           },
         });
 
