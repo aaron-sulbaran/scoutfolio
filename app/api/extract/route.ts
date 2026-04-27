@@ -1,6 +1,7 @@
 import { auth } from "@/auth";
 import { streamText, stepCountIs, type ModelMessage } from "ai";
 import { anthropic } from "@ai-sdk/anthropic";
+import { get as getBlob } from "@vercel/blob";
 import { fetchUrl, submitFindings } from "@/lib/extract-tools";
 
 export const runtime = "nodejs";
@@ -35,35 +36,60 @@ export async function POST(req: Request) {
   }
 
   // Build the user message: text-only for URL, text+PDF for resume.
-  const messages: ModelMessage[] =
-    body.source === "url"
-      ? [
+  let messages: ModelMessage[];
+
+  if (body.source === "url") {
+    messages = [
+      {
+        role: "user",
+        content: [
           {
-            role: "user",
-            content: [
-              {
-                type: "text",
-                text: `Extract portfolio content from this URL: ${body.url}`,
-              },
-            ],
+            type: "text",
+            text: `Extract portfolio content from this URL: ${body.url}`,
           },
-        ]
-      : [
+        ],
+      },
+    ];
+  } else {
+    // Read the PDF from Vercel Blob using the @vercel/blob SDK so the
+    // BLOB_READ_WRITE_TOKEN is applied automatically (the store is private).
+    console.log("[extract] reading PDF from blob:", body.blobUrl);
+    let pdfBuffer: Uint8Array;
+    try {
+      const result = await getBlob(body.blobUrl, { access: "private" });
+      if (!result) {
+        return new Response("Blob not found", { status: 404 });
+      }
+      pdfBuffer = new Uint8Array(
+        await new Response(result.stream).arrayBuffer()
+      );
+    } catch (err) {
+      console.error("[extract] blob read failed:", err);
+      return new Response(
+        `Could not read the uploaded PDF: ${err instanceof Error ? err.message : String(err)}`,
+        { status: 502 }
+      );
+    }
+    console.log("[extract] PDF buffer size:", pdfBuffer.byteLength);
+
+    messages = [
+      {
+        role: "user",
+        content: [
           {
-            role: "user",
-            content: [
-              {
-                type: "text",
-                text: `Extract portfolio content from the attached resume PDF${body.filename ? ` (filename: ${body.filename})` : ""}. Use vision to read text, layout, headshots, logos, and any visual elements.`,
-              },
-              {
-                type: "file",
-                data: new URL(body.blobUrl),
-                mediaType: "application/pdf",
-              },
-            ],
+            type: "text",
+            text: `Extract portfolio content from the attached resume PDF${body.filename ? ` (filename: ${body.filename})` : ""}. Use vision to read text, layout, headshots, logos, and any visual elements.`,
           },
-        ];
+          {
+            type: "file",
+            data: pdfBuffer,
+            mediaType: "application/pdf",
+            filename: body.filename,
+          },
+        ],
+      },
+    ];
+  }
 
   // Both branches expose the same tool surface; the system prompt + attached PDF
   // tell the model when to fetchUrl vs read the file directly.
@@ -88,7 +114,7 @@ export async function POST(req: Request) {
         let findings: unknown = null;
 
         const result = streamText({
-          model: anthropic("claude-sonnet-4-6"),
+          model: anthropic("claude-haiku-4-5"),
           system: SYSTEM,
           messages,
           tools,
@@ -131,6 +157,7 @@ export async function POST(req: Request) {
             }
           },
           onError({ error }) {
+            console.error("[extract] streamText error:", error);
             send(controller, {
               type: "status",
               text: `Model error: ${error instanceof Error ? error.message : String(error)}`,
@@ -150,6 +177,7 @@ export async function POST(req: Request) {
         }
         send(controller, { type: "done" });
       } catch (err) {
+        console.error("[extract] route error:", err);
         send(controller, {
           type: "error",
           message: err instanceof Error ? err.message : String(err),

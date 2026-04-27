@@ -171,12 +171,12 @@ export const submitFindings = tool({
           link: z.string().optional(),
         })
       )
-      .max(8)
-      .describe("Top portfolio-worthy projects found in the source"),
+      .describe("Top portfolio-worthy projects found in the source (cap yourself at 8)"),
     skills: z
       .array(z.string())
-      .max(12)
-      .describe("Notable skills, tools, or domains explicitly evidenced in the source"),
+      .describe(
+        "Notable skills, tools, or domains explicitly evidenced in the source (cap at 12)"
+      ),
     notableLinks: z
       .array(
         z.object({
@@ -184,8 +184,9 @@ export const submitFindings = tool({
           url: z.string(),
         })
       )
-      .max(6)
-      .describe("Outbound links worth following (GitHub, project pages, case studies)"),
+      .describe(
+        "Outbound links worth following (GitHub, project pages, case studies; cap at 6)"
+      ),
   }),
   execute: async (input) => {
     return { ok: true as const, received: input };

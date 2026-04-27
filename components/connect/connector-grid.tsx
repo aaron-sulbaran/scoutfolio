@@ -1,7 +1,6 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { upload } from "@vercel/blob/client";
 import {
   ArrowRight,
   ArrowUpRight,
@@ -116,27 +115,42 @@ export function ConnectorGrid() {
   }
 
   async function handleResumeFile(file: File) {
+    console.log("[resume] starting upload:", file.name, file.size, "bytes");
     setResume({
       status: "uploading",
       statuses: [`Uploading ${file.name} (${Math.round(file.size / 1024)} kb)...`],
       filename: file.name,
     });
     try {
-      const blob = await upload(file.name, file, {
-        access: "public",
-        handleUploadUrl: "/api/blob/upload",
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const uploadRes = await fetch("/api/blob/upload", {
+        method: "POST",
+        body: formData,
       });
+
+      if (!uploadRes.ok) {
+        const text = await uploadRes.text();
+        throw new Error(`Upload failed (${uploadRes.status}): ${text}`);
+      }
+
+      const { url } = (await uploadRes.json()) as { url: string };
+      console.log("[resume] upload resolved:", url);
+
       setResume((prev) => ({
         ...prev,
-        blobUrl: blob.url,
+        blobUrl: url,
         statuses: [...prev.statuses, "Upload complete. Reading the PDF..."],
       }));
+
       await runExtract(
         "resume",
-        { blobUrl: blob.url, filename: file.name },
+        { blobUrl: url, filename: file.name },
         setResume
       );
     } catch (err) {
+      console.error("[resume] upload failed:", err);
       setResume((prev) => ({
         ...prev,
         status: "error",

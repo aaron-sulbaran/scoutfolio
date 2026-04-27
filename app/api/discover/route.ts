@@ -24,9 +24,7 @@ const InventoryItemSchema = z.object({
     .describe("Which source this came from (e.g., 'resume', 'personal URL: ryanp.dev')"),
   strengthScore: z
     .number()
-    .min(1)
-    .max(10)
-    .describe("How portfolio-worthy this is for the target role, 1-10"),
+    .describe("How portfolio-worthy this is for the target role, integer 1-10"),
   reasoning: z
     .string()
     .describe("One short sentence explaining the strength score"),
@@ -41,10 +39,11 @@ const InventorySchema = z.object({
     .describe(
       "One short editorial line summarizing the candidate's positioning, e.g., 'A builder fluent in Next.js and edge infrastructure.' Recruiter-facing."
     ),
-  items: z.array(InventoryItemSchema).min(2).max(10),
+  items: z
+    .array(InventoryItemSchema)
+    .describe("4 to 8 ranked inventory items, in order of recruiter relevance"),
   suggestedNext: z
     .array(z.string())
-    .max(3)
     .describe(
       "Two or three concrete projects this person should build next to strengthen the portfolio for their target role"
     ),
@@ -85,7 +84,7 @@ export async function POST(req: Request) {
   const targetRole = body.targetRole ?? "the role they're targeting";
 
   const result = await generateObject({
-    model: anthropic("claude-sonnet-4-6"),
+    model: anthropic("claude-haiku-4-5"),
     schema: InventorySchema,
     system: `You are ScoutFolio's portfolio-curation agent. Take raw extracted content from multiple sources and produce a recruiter-ready ranked inventory for a student. Be opinionated. Lead with specifics. Avoid filler ("passionate about", "team player", "experienced in"). Write copy that would survive a 6-second resume scan.`,
     prompt: `Build a portfolio inventory for a student targeting ${targetRole}.

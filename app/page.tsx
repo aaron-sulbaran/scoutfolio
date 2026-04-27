@@ -1,4 +1,5 @@
 import { ArrowRight } from "lucide-react";
+import Link from "next/link";
 import { Grain } from "@/components/grain";
 import { SiteNav } from "@/components/site-nav";
 import { SiteFooter } from "@/components/site-footer";
@@ -16,6 +17,7 @@ export default function Home() {
 
         <main className="flex-1">
           <Hero />
+          <HowItWorks />
           <Examples />
           <ClosingCTA />
         </main>
@@ -113,6 +115,52 @@ function Stat({ label, value }: { label: string; value: string }) {
       </p>
       <p className="mt-1.5 text-sm text-foreground">{value}</p>
     </div>
+  );
+}
+
+function HowItWorks() {
+  const steps = [
+    { num: "01", title: "Connect", desc: "Link your sources" },
+    { num: "02", title: "Discover", desc: "Agent reads everything" },
+    { num: "03", title: "Ship", desc: "Get a site you&apos;d share" },
+  ];
+
+  return (
+    <section className="border-t border-border px-6 py-16 md:py-20">
+      <div className="mx-auto max-w-6xl">
+        <div className="flex flex-col items-start justify-between gap-8 md:flex-row md:items-center">
+          <div className="flex flex-1 flex-wrap items-center gap-x-10 gap-y-6 md:gap-x-14 lg:gap-x-20">
+            {steps.map((step, i) => (
+              <div key={step.num} className="flex items-baseline gap-3">
+                <span className="font-serif text-2xl italic text-accent/60 md:text-3xl">
+                  {step.num}
+                </span>
+                <div>
+                  <p className="font-serif text-lg text-foreground md:text-xl">
+                    {step.title}
+                  </p>
+                  <p
+                    className="mt-0.5 text-xs text-muted"
+                    dangerouslySetInnerHTML={{ __html: step.desc }}
+                  />
+                </div>
+                {i < steps.length - 1 && (
+                  <span className="ml-6 hidden h-px w-8 bg-border lg:block" />
+                )}
+              </div>
+            ))}
+          </div>
+
+          <Link
+            href="/how-it-works"
+            className="group inline-flex items-center gap-1.5 whitespace-nowrap text-sm text-foreground transition-colors hover:text-accent"
+          >
+            See how it works
+            <ArrowRight className="size-3.5 transition-transform group-hover:translate-x-0.5" />
+          </Link>
+        </div>
+      </div>
+    </section>
   );
 }
 
