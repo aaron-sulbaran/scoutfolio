@@ -1,5 +1,10 @@
 import { auth } from "@/auth";
 import { put } from "@vercel/blob";
+import {
+  enforceLimit,
+  rateLimitedResponse,
+  rateLimitMessage,
+} from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -11,6 +16,14 @@ export async function POST(request: Request) {
   const session = await auth();
   if (!session?.user?.email) {
     return new Response("Unauthorized", { status: 401 });
+  }
+
+  const limit = await enforceLimit("upload", session.user.email);
+  if (!limit.ok) {
+    return rateLimitedResponse(
+      limit,
+      rateLimitMessage("upload", limit.resetMs)
+    );
   }
 
   let formData: FormData;
@@ -32,16 +45,16 @@ export async function POST(request: Request) {
     return new Response("File too large (max 5 MB)", { status: 413 });
   }
 
-  console.log("[blob-upload] uploading:", file.name, file.size, "bytes");
-
   try {
     const blob = await put(file.name, file, {
       access: "private",
       addRandomSuffix: true,
       contentType: "application/pdf",
     });
-    console.log("[blob-upload] uploaded:", blob.url);
-    return Response.json({ url: blob.url, pathname: blob.pathname });
+    return Response.json(
+      { url: blob.url, pathname: blob.pathname },
+      { headers: limit.headers }
+    );
   } catch (err) {
     console.error("[blob-upload] put() failed:", err);
     return Response.json(

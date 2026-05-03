@@ -52,9 +52,24 @@ client_secret*.json
 id_rsa
 id_ed25519
 id_ecdsa
-# Sentry auth token, Cursor MCP with API keys, direnv with secrets
+# Sentry auth token, direnv with secrets
 .sentryclirc
-.cursor/mcp.json
+
+# Agent / IDE workspace context (MCP tokens, machine paths, local agent state)
+# Share team Cursor rules by committing under .cursor/rules/ (negated below).
+.cursor/*
+!.cursor/rules/
+!.cursor/rules/**
+.claude/
+
+# Root agent instruction files used live by Cursor / Claude Code (often cite internals)
+/AGENTS.md
+/CLAUDE.md
+
+# Secret backups and env dumps that belong alongside .env*
+.env*.bak
+**/.env*.bak
+
 # local databases that may hold PII
 *.sqlite
 *.sqlite3

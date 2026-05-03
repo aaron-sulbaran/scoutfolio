@@ -11,6 +11,8 @@
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.71",
     "@ai-sdk/gateway": "^3.0.104",
+    "@upstash/ratelimit": "^2.0.8",
+    "@upstash/redis": "^1.37.0",
     "@vercel/blob": "^2.3.3",
     "ai": "^6.0.168",
     "lucide-react": "^0.545.0",

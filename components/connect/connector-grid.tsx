@@ -21,17 +21,34 @@ import {
 } from "@/components/connect/inventory-panel";
 
 type SourceId = "github" | "resume" | "url";
-type Status = "idle" | "uploading" | "extracting" | "done" | "error";
+type Status = "idle" | "uploading" | "extracting" | "done" | "error" | "limited";
 
 type SourceState = {
   status: Status;
   statuses: string[];
   result?: Findings;
   error?: string;
+  rateLimit?: { message: string; resetAt: string };
   blobUrl?: string;
   filename?: string;
   inputUrl?: string;
 };
+
+type RateLimitBody = {
+  error: "rate_limited";
+  message: string;
+  limit: number;
+  resetAt: string;
+};
+
+async function parseRateLimit(res: Response): Promise<RateLimitBody | null> {
+  if (res.status !== 429) return null;
+  try {
+    return (await res.clone().json()) as RateLimitBody;
+  } catch {
+    return null;
+  }
+}
 
 const INITIAL: SourceState = { status: "idle", statuses: [] };
 
@@ -44,6 +61,9 @@ export function ConnectorGrid() {
 
   const [discoveryLoading, setDiscoveryLoading] = useState(false);
   const [discoveryError, setDiscoveryError] = useState<string | undefined>();
+  const [discoveryLimit, setDiscoveryLimit] = useState<
+    { message: string; resetAt: string } | undefined
+  >();
   const [inventory, setInventory] = useState<Inventory | undefined>();
 
   const isConnected = (s: SourceState) =>
@@ -78,6 +98,15 @@ export function ConnectorGrid() {
       });
 
       if (!res.ok) {
+        const limited = await parseRateLimit(res);
+        if (limited) {
+          setState((prev) => ({
+            ...prev,
+            status: "limited",
+            rateLimit: { message: limited.message, resetAt: limited.resetAt },
+          }));
+          return;
+        }
         const text = await res.text();
         setState((prev) => ({
           ...prev,
@@ -115,7 +144,6 @@ export function ConnectorGrid() {
   }
 
   async function handleResumeFile(file: File) {
-    console.log("[resume] starting upload:", file.name, file.size, "bytes");
     setResume({
       status: "uploading",
       statuses: [`Uploading ${file.name} (${Math.round(file.size / 1024)} kb)...`],
@@ -131,12 +159,20 @@ export function ConnectorGrid() {
       });
 
       if (!uploadRes.ok) {
+        const limited = await parseRateLimit(uploadRes);
+        if (limited) {
+          setResume((prev) => ({
+            ...prev,
+            status: "limited",
+            rateLimit: { message: limited.message, resetAt: limited.resetAt },
+          }));
+          return;
+        }
         const text = await uploadRes.text();
         throw new Error(`Upload failed (${uploadRes.status}): ${text}`);
       }
 
       const { url } = (await uploadRes.json()) as { url: string };
-      console.log("[resume] upload resolved:", url);
 
       setResume((prev) => ({
         ...prev,
@@ -150,7 +186,6 @@ export function ConnectorGrid() {
         setResume
       );
     } catch (err) {
-      console.error("[resume] upload failed:", err);
       setResume((prev) => ({
         ...prev,
         status: "error",
@@ -192,6 +227,7 @@ export function ConnectorGrid() {
 
     setDiscoveryLoading(true);
     setDiscoveryError(undefined);
+    setDiscoveryLimit(undefined);
     setInventory(undefined);
 
     try {
@@ -201,6 +237,14 @@ export function ConnectorGrid() {
         body: JSON.stringify({ sources }),
       });
       if (!res.ok) {
+        const limited = await parseRateLimit(res);
+        if (limited) {
+          setDiscoveryLimit({
+            message: limited.message,
+            resetAt: limited.resetAt,
+          });
+          return;
+        }
         const text = await res.text();
         setDiscoveryError(`${res.status}: ${text}`);
         return;
@@ -311,6 +355,9 @@ export function ConnectorGrid() {
           </div>
           <NarrationPanel statuses={resume.statuses} />
           {resume.result && <FindingsView data={resume.result} />}
+          {resume.status === "limited" && resume.rateLimit && (
+            <LimitedRow message={resume.rateLimit.message} />
+          )}
           {resume.error && <ErrorRow message={resume.error} />}
         </li>
 
@@ -358,6 +405,9 @@ export function ConnectorGrid() {
           </div>
           <NarrationPanel statuses={url.statuses} />
           {url.result && <FindingsView data={url.result} />}
+          {url.status === "limited" && url.rateLimit && (
+            <LimitedRow message={url.rateLimit.message} />
+          )}
           {url.error && <ErrorRow message={url.error} />}
         </li>
 
@@ -412,6 +462,11 @@ export function ConnectorGrid() {
             <>Add at least one source to begin.</>
           )}
         </p>
+        {discoveryLimit && (
+          <div className="mt-3 max-w-md">
+            <LimitedRow message={discoveryLimit.message} />
+          </div>
+        )}
       </div>
 
       <div id="inventory">
@@ -492,6 +547,17 @@ function ErrorRow({ message }: { message: string }) {
   return (
     <div className="mt-4 rounded-md border border-red-200 bg-red-50/40 p-3 text-xs text-red-900">
       {message}
+    </div>
+  );
+}
+
+function LimitedRow({ message }: { message: string }) {
+  return (
+    <div className="mt-4 rounded-md border border-accent/25 bg-accent/[0.04] p-3.5 text-[13px] leading-relaxed text-foreground">
+      <p className="mb-1 font-mono text-[10px] uppercase tracking-[0.18em] text-accent">
+        Daily limit reached
+      </p>
+      <p className="text-muted">{message}</p>
     </div>
   );
 }

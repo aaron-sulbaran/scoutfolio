@@ -3,6 +3,11 @@ import { generateObject } from "ai";
 import { anthropic } from "@ai-sdk/anthropic";
 import { z } from "zod";
 import type { Findings } from "@/lib/extract-client";
+import {
+  enforceLimit,
+  rateLimitedResponse,
+  rateLimitMessage,
+} from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -51,8 +56,16 @@ const InventorySchema = z.object({
 
 export async function POST(req: Request) {
   const session = await auth();
-  if (!session?.user) {
+  if (!session?.user?.email) {
     return new Response("Unauthorized", { status: 401 });
+  }
+
+  const limit = await enforceLimit("discover", session.user.email);
+  if (!limit.ok) {
+    return rateLimitedResponse(
+      limit,
+      rateLimitMessage("discover", limit.resetMs)
+    );
   }
 
   let body: DiscoverRequest;
@@ -99,5 +112,5 @@ Produce:
 3. 2-3 specific projects they should build next to strengthen the portfolio.`,
   });
 
-  return Response.json(result.object);
+  return Response.json(result.object, { headers: limit.headers });
 }

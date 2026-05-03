@@ -3,6 +3,11 @@ import { streamText, stepCountIs, type ModelMessage } from "ai";
 import { anthropic } from "@ai-sdk/anthropic";
 import { get as getBlob } from "@vercel/blob";
 import { fetchUrl, submitFindings } from "@/lib/extract-tools";
+import {
+  enforceLimit,
+  rateLimitedResponse,
+  rateLimitMessage,
+} from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -24,8 +29,16 @@ Tone for tagline and summaries: confident, recruiter-facing, specific. Avoid fil
 
 export async function POST(req: Request) {
   const session = await auth();
-  if (!session?.user) {
+  if (!session?.user?.email) {
     return new Response("Unauthorized", { status: 401 });
+  }
+
+  const limit = await enforceLimit("extract", session.user.email);
+  if (!limit.ok) {
+    return rateLimitedResponse(
+      limit,
+      rateLimitMessage("extract", limit.resetMs)
+    );
   }
 
   let body: ExtractRequest;
@@ -53,7 +66,6 @@ export async function POST(req: Request) {
   } else {
     // Read the PDF from Vercel Blob using the @vercel/blob SDK so the
     // BLOB_READ_WRITE_TOKEN is applied automatically (the store is private).
-    console.log("[extract] reading PDF from blob:", body.blobUrl);
     let pdfBuffer: Uint8Array;
     try {
       const result = await getBlob(body.blobUrl, { access: "private" });
@@ -70,8 +82,6 @@ export async function POST(req: Request) {
         { status: 502 }
       );
     }
-    console.log("[extract] PDF buffer size:", pdfBuffer.byteLength);
-
     messages = [
       {
         role: "user",
@@ -190,6 +200,7 @@ export async function POST(req: Request) {
 
   return new Response(stream, {
     headers: {
+      ...limit.headers,
       "content-type": "application/x-ndjson; charset=utf-8",
       "cache-control": "no-store",
       "x-accel-buffering": "no",
