@@ -11,6 +11,13 @@ import {
   recordUsage,
   type LimiterKey,
 } from "@/lib/rate-limit";
+import {
+  setResume,
+  setGithub,
+  upsertUrl,
+  canonicalizeUrl,
+} from "@/lib/workspace";
+import type { Findings } from "@/lib/extract-client";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -339,7 +346,41 @@ export async function POST(req: Request) {
           // Only consume a slot for genuine successes. Empty submissions, model
           // errors, or scanned-PDF dead ends leave the user's quota intact.
           await recordUsage(limiterKey, session.user!.email!);
-          send(controller, { type: "result", data: findings });
+          const f = findings as Findings;
+          const now = new Date().toISOString();
+          let urlEntryId: string | undefined;
+          try {
+            if (body.source === "resume") {
+              await setResume(session.user!.email!, {
+                findings: f,
+                filename: body.filename ?? "resume.pdf",
+                blobUrl: body.blobUrl,
+                extractedAt: now,
+              });
+            } else if (body.source === "github") {
+              await setGithub(session.user!.email!, {
+                findings: f,
+                githubLogin: session.user!.githubLogin ?? "",
+                extractedAt: now,
+              });
+            } else if (body.source === "url") {
+              const { entry } = await upsertUrl(session.user!.email!, {
+                url: body.url,
+                canonical: canonicalizeUrl(body.url),
+                findings: f,
+                extractedAt: now,
+              });
+              urlEntryId = entry.id;
+            }
+          } catch (err) {
+            console.warn("[extract] workspace write failed:", err);
+          }
+          send(controller, {
+            type: "result",
+            data: findings,
+            artifactId: urlEntryId,
+            extractedAt: now,
+          });
         } else {
           send(controller, {
             type: "extraction_failed",

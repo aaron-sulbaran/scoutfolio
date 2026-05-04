@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   ArrowRight,
@@ -13,6 +13,8 @@ import {
   Loader2,
   Lock,
   Plus,
+  Trash2,
+  X,
 } from "lucide-react";
 import { readNdjsonStream, type Findings } from "@/lib/extract-client";
 import { FindingsView, NarrationPanel } from "@/components/connect/findings-view";
@@ -23,6 +25,8 @@ import {
 } from "@/components/connect/inventory-panel";
 import { useLimits } from "@/lib/use-limits";
 import { connectGitHub, disconnectGitHub } from "@/app/actions";
+import type { Workspace, UrlArtifact } from "@/lib/workspace";
+import { canonicalizeUrl } from "@/lib/canonical";
 
 const GENERATED_STORAGE_KEY = "scoutfolio.generated.v2";
 
@@ -45,6 +49,12 @@ type SourceState = {
   blobUrl?: string;
   filename?: string;
   inputUrl?: string;
+  extractedAt?: string;
+};
+
+type UrlSlot = SourceState & {
+  id: string;
+  inputUrl: string;
 };
 
 type RateLimitBody = {
@@ -65,19 +75,71 @@ async function parseRateLimit(res: Response): Promise<RateLimitBody | null> {
 
 const INITIAL: SourceState = { status: "idle", statuses: [] };
 
+function hydrateResume(ws?: Workspace): SourceState {
+  if (!ws?.resume) return INITIAL;
+  return {
+    status: "done",
+    statuses: [],
+    result: ws.resume.findings,
+    filename: ws.resume.filename,
+    blobUrl: ws.resume.blobUrl,
+    extractedAt: ws.resume.extractedAt,
+  };
+}
+
+function hydrateGithub(ws?: Workspace): SourceState {
+  if (!ws?.github) return INITIAL;
+  return {
+    status: "done",
+    statuses: [],
+    result: ws.github.findings,
+    extractedAt: ws.github.extractedAt,
+  };
+}
+
+function hydrateUrls(ws?: Workspace): UrlSlot[] {
+  if (!ws?.urls) return [];
+  return ws.urls.map((u: UrlArtifact) => ({
+    id: u.id,
+    inputUrl: u.url,
+    status: "done" as const,
+    statuses: [],
+    result: u.findings,
+    extractedAt: u.extractedAt,
+  }));
+}
+
+function newSlotId(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID().slice(0, 16);
+  }
+  return Math.random().toString(36).slice(2, 18);
+}
+
 export function ConnectorGrid({
   githubLogin,
   githubConnected = false,
   githubConfigError = false,
+  initialWorkspace,
 }: {
   githubLogin?: string;
   githubConnected?: boolean;
   githubConfigError?: boolean;
+  initialWorkspace?: Workspace;
 } = {}) {
-  const [github, setGithub] = useState(INITIAL);
-  const [resume, setResume] = useState(INITIAL);
-  const [url, setUrl] = useState(INITIAL);
+  const [github, setGithub] = useState<SourceState>(() =>
+    hydrateGithub(initialWorkspace)
+  );
+  const [resume, setResume] = useState<SourceState>(() =>
+    hydrateResume(initialWorkspace)
+  );
+  const [urls, setUrls] = useState<UrlSlot[]>(() =>
+    hydrateUrls(initialWorkspace)
+  );
   const [urlInput, setUrlInput] = useState("");
+  const [showUrlInput, setShowUrlInput] = useState(() =>
+    hydrateUrls(initialWorkspace).length === 0
+  );
   const fileRef = useRef<HTMLInputElement>(null);
 
   const router = useRouter();
@@ -100,36 +162,215 @@ export function ConnectorGrid({
   const connectedCount =
     (isConnected(github) ? 1 : 0) +
     (isConnected(resume) ? 1 : 0) +
-    (isConnected(url) ? 1 : 0);
+    urls.filter(isConnected).length;
   const hasAnyDone =
     github.status === "done" ||
     resume.status === "done" ||
-    url.status === "done";
+    urls.some((u) => u.status === "done");
 
-  async function runExtract(
-    source: "url" | "resume" | "github",
-    payload: { url?: string; blobUrl?: string; filename?: string },
-    setState: React.Dispatch<React.SetStateAction<SourceState>>
-  ) {
-    setState((prev) => ({
+  // Keep the in-card input visible only when there are zero saved URLs.
+  // 1 saved → user clicks "Add another URL" to reveal it. 2+ → list section
+  // owns the input.
+  useEffect(() => {
+    if (urls.length === 0) setShowUrlInput(true);
+  }, [urls.length]);
+
+  async function runUrlExtract(slotId: string, url: string) {
+    setUrls((prev) =>
+      prev.map((u) =>
+        u.id === slotId
+          ? {
+              ...u,
+              status: "extracting",
+              statuses: [...u.statuses, "Spinning up the agent..."],
+              result: undefined,
+              error: undefined,
+              softMessage: undefined,
+            }
+          : u
+      )
+    );
+    try {
+      const res = await fetch("/api/extract", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ source: "url", url }),
+      });
+      if (!res.ok) {
+        const limited = await parseRateLimit(res);
+        if (limited) {
+          setUrls((prev) =>
+            prev.map((u) =>
+              u.id === slotId
+                ? {
+                    ...u,
+                    status: "limited",
+                    rateLimit: {
+                      message: limited.message,
+                      resetAt: limited.resetAt,
+                    },
+                  }
+                : u
+            )
+          );
+          return;
+        }
+        const text = await res.text();
+        setUrls((prev) =>
+          prev.map((u) =>
+            u.id === slotId
+              ? { ...u, status: "error", error: `${res.status}: ${text}` }
+              : u
+          )
+        );
+        return;
+      }
+
+      let softMessage: string | undefined;
+      let gotResult = false;
+      let serverArtifactId: string | undefined;
+      let extractedAt: string | undefined;
+
+      for await (const event of readNdjsonStream(res)) {
+        if (event.type === "status") {
+          setUrls((prev) =>
+            prev.map((u) =>
+              u.id === slotId
+                ? { ...u, statuses: [...u.statuses, event.text] }
+                : u
+            )
+          );
+        } else if (event.type === "result") {
+          gotResult = true;
+          serverArtifactId = event.artifactId;
+          extractedAt = event.extractedAt;
+          setUrls((prev) =>
+            prev.map((u) =>
+              u.id === slotId
+                ? { ...u, result: event.data, extractedAt: event.extractedAt }
+                : u
+            )
+          );
+        } else if (event.type === "extraction_failed") {
+          softMessage = event.message;
+        } else if (event.type === "done") {
+          setUrls((prev) => {
+            // If the server returned a different canonical id (re-extract that
+            // matched an existing entry), reconcile by replacing the local
+            // slot id so DELETE works against the server's id.
+            return prev.map((u) =>
+              u.id === slotId
+                ? {
+                    ...u,
+                    id: serverArtifactId ?? u.id,
+                    status: gotResult ? "done" : "soft_failed",
+                    softMessage: gotResult
+                      ? undefined
+                      : softMessage ??
+                        "That URL didn't return enough content. Your usage wasn't affected.",
+                    extractedAt,
+                  }
+                : u
+            );
+          });
+          if (gotResult) void refreshLimits();
+        } else if (event.type === "error") {
+          setUrls((prev) =>
+            prev.map((u) =>
+              u.id === slotId
+                ? { ...u, status: "error", error: event.message }
+                : u
+            )
+          );
+        }
+      }
+    } catch (err) {
+      setUrls((prev) =>
+        prev.map((u) =>
+          u.id === slotId
+            ? {
+                ...u,
+                status: "error",
+                error: err instanceof Error ? err.message : String(err),
+              }
+            : u
+        )
+      );
+    }
+  }
+
+  function submitNewUrl() {
+    const trimmed = urlInput.trim();
+    if (!trimmed) return;
+    let normalized = trimmed;
+    if (!/^https?:\/\//i.test(normalized)) {
+      normalized = "https://" + normalized;
+    }
+    // Dedupe client-side: if the canonical form matches an existing slot,
+    // re-extract that slot in place instead of pushing a new row. The server
+    // would also dedupe via upsertUrl, but doing it here keeps the UI honest
+    // and prevents the "two visible rows for the same link" flash that
+    // burned a rate-limit slot on the second extract.
+    const canonicalNew = canonicalizeUrl(normalized);
+    const existing = urls.find(
+      (u) => canonicalizeUrl(u.inputUrl) === canonicalNew
+    );
+    setUrlInput("");
+    setShowUrlInput(false);
+    if (existing) {
+      void runUrlExtract(existing.id, normalized);
+      return;
+    }
+    const slotId = newSlotId();
+    setUrls((prev) => [
+      ...prev,
+      {
+        id: slotId,
+        inputUrl: normalized,
+        status: "extracting",
+        statuses: [],
+      },
+    ]);
+    void runUrlExtract(slotId, normalized);
+  }
+
+  async function reExtractUrl(slot: UrlSlot) {
+    await runUrlExtract(slot.id, slot.inputUrl);
+  }
+
+  async function removeUrlSlot(slot: UrlSlot) {
+    setUrls((prev) => prev.filter((u) => u.id !== slot.id));
+    try {
+      await fetch(`/api/workspace?source=url&id=${encodeURIComponent(slot.id)}`, {
+        method: "DELETE",
+      });
+    } catch (err) {
+      console.warn("[connector-grid] url delete failed:", err);
+    }
+  }
+
+  async function runResumeExtract(blobUrl: string, filename?: string) {
+    setResume((prev) => ({
       ...prev,
       status: "extracting",
       statuses: [...prev.statuses, "Spinning up the agent..."],
       result: undefined,
       error: undefined,
+      softMessage: undefined,
+      blobUrl,
+      filename: filename ?? prev.filename,
     }));
-
     try {
       const res = await fetch("/api/extract", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ source, ...payload }),
+        body: JSON.stringify({ source: "resume", blobUrl, filename }),
       });
 
       if (!res.ok) {
         const limited = await parseRateLimit(res);
         if (limited) {
-          setState((prev) => ({
+          setResume((prev) => ({
             ...prev,
             status: "limited",
             rateLimit: { message: limited.message, resetAt: limited.resetAt },
@@ -137,7 +378,7 @@ export function ConnectorGrid({
           return;
         }
         const text = await res.text();
-        setState((prev) => ({
+        setResume((prev) => ({
           ...prev,
           status: "error",
           error: `${res.status}: ${text}`,
@@ -147,33 +388,33 @@ export function ConnectorGrid({
 
       let softMessage: string | undefined;
       let gotResult = false;
-
       for await (const event of readNdjsonStream(res)) {
         if (event.type === "status") {
-          setState((prev) => ({
+          setResume((prev) => ({
             ...prev,
             statuses: [...prev.statuses, event.text],
           }));
         } else if (event.type === "result") {
           gotResult = true;
-          setState((prev) => ({ ...prev, result: event.data }));
+          setResume((prev) => ({
+            ...prev,
+            result: event.data,
+            extractedAt: event.extractedAt,
+          }));
         } else if (event.type === "extraction_failed") {
           softMessage = event.message;
         } else if (event.type === "done") {
-          if (gotResult) {
-            setState((prev) => ({ ...prev, status: "done" }));
-            void refreshLimits();
-          } else {
-            setState((prev) => ({
-              ...prev,
-              status: "soft_failed",
-              softMessage:
-                softMessage ??
-                "That source didn't return anything. Try again, your usage wasn't affected.",
-            }));
-          }
+          setResume((prev) => ({
+            ...prev,
+            status: gotResult ? "done" : "soft_failed",
+            softMessage: gotResult
+              ? undefined
+              : softMessage ??
+                "Couldn't pull anything useful from that PDF. Your usage wasn't affected.",
+          }));
+          if (gotResult) void refreshLimits();
         } else if (event.type === "error") {
-          setState((prev) => ({
+          setResume((prev) => ({
             ...prev,
             status: "error",
             error: event.message,
@@ -181,7 +422,7 @@ export function ConnectorGrid({
         }
       }
     } catch (err) {
-      setState((prev) => ({
+      setResume((prev) => ({
         ...prev,
         status: "error",
         error: err instanceof Error ? err.message : String(err),
@@ -226,11 +467,7 @@ export function ConnectorGrid({
         statuses: [...prev.statuses, "Upload complete. Reading the PDF..."],
       }));
 
-      await runExtract(
-        "resume",
-        { blobUrl: url, filename: file.name },
-        setResume
-      );
+      await runResumeExtract(url, file.name);
     } catch (err) {
       setResume((prev) => ({
         ...prev,
@@ -240,16 +477,97 @@ export function ConnectorGrid({
     }
   }
 
-  function handleUrlSubmit() {
-    const trimmed = urlInput.trim();
-    if (!trimmed) return;
-    let normalized = trimmed;
-    if (!/^https?:\/\//i.test(normalized)) {
-      normalized = "https://" + normalized;
+  async function reExtractResume() {
+    if (!resume.blobUrl) return;
+    await runResumeExtract(resume.blobUrl, resume.filename);
+  }
+
+  async function removeResumeArtifact() {
+    setResume(INITIAL);
+    try {
+      await fetch("/api/workspace?source=resume", { method: "DELETE" });
+    } catch (err) {
+      console.warn("[connector-grid] resume delete failed:", err);
     }
-    setUrl({ status: "uploading", statuses: [], inputUrl: normalized });
-    setUrlInput("");
-    void runExtract("url", { url: normalized }, setUrl);
+  }
+
+  async function runGithubExtract() {
+    setGithub((prev) => ({
+      ...prev,
+      status: "extracting",
+      statuses: [...prev.statuses, "Spinning up the agent..."],
+      result: undefined,
+      error: undefined,
+      softMessage: undefined,
+    }));
+    try {
+      const res = await fetch("/api/extract", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ source: "github" }),
+      });
+
+      if (!res.ok) {
+        const limited = await parseRateLimit(res);
+        if (limited) {
+          setGithub((prev) => ({
+            ...prev,
+            status: "limited",
+            rateLimit: { message: limited.message, resetAt: limited.resetAt },
+          }));
+          return;
+        }
+        const text = await res.text();
+        setGithub((prev) => ({
+          ...prev,
+          status: "error",
+          error: `${res.status}: ${text}`,
+        }));
+        return;
+      }
+
+      let softMessage: string | undefined;
+      let gotResult = false;
+      for await (const event of readNdjsonStream(res)) {
+        if (event.type === "status") {
+          setGithub((prev) => ({
+            ...prev,
+            statuses: [...prev.statuses, event.text],
+          }));
+        } else if (event.type === "result") {
+          gotResult = true;
+          setGithub((prev) => ({
+            ...prev,
+            result: event.data,
+            extractedAt: event.extractedAt,
+          }));
+        } else if (event.type === "extraction_failed") {
+          softMessage = event.message;
+        } else if (event.type === "done") {
+          setGithub((prev) => ({
+            ...prev,
+            status: gotResult ? "done" : "soft_failed",
+            softMessage: gotResult
+              ? undefined
+              : softMessage ??
+                "Couldn't pull enough from your GitHub. Your usage wasn't affected.",
+          }));
+          if (gotResult) void refreshLimits();
+        } else if (event.type === "error") {
+          setGithub((prev) => ({
+            ...prev,
+            status: "error",
+            error: event.message,
+          }));
+        }
+      }
+    } catch (err) {
+      setGithub((prev) => ({
+        ...prev,
+        status: "error",
+        error: err instanceof Error ? err.message : String(err),
+      }));
+    }
   }
 
   async function runDiscovery() {
@@ -260,20 +578,24 @@ export function ConnectorGrid({
         data: resume.result,
       });
     }
-    if (url.result) {
-      sources.push({
-        source: url.inputUrl ? `personal URL: ${url.inputUrl}` : "personal URL",
-        data: url.result,
-      });
-    }
     if (github.result) {
       sources.push({
         source: githubLogin ? `GitHub: ${githubLogin}` : "GitHub",
         data: github.result,
       });
     }
+    for (const u of urls) {
+      if (u.result) {
+        sources.push({
+          source: `personal URL: ${u.inputUrl}`,
+          data: u.result,
+        });
+      }
+    }
     if (sources.length === 0) {
-      setDiscoveryError("Connect at least one source with extracted findings first.");
+      setDiscoveryError(
+        "Connect at least one source with extracted findings first."
+      );
       return;
     }
 
@@ -298,9 +620,6 @@ export function ConnectorGrid({
           });
           return;
         }
-        // Server-side soft fail (no inventory items, model rate-cap, etc.)
-        // returns 502 with a structured body. Surface the friendly message and
-        // do NOT count this against the user.
         if (res.status === 502) {
           try {
             const body = (await res.clone().json()) as {
@@ -340,14 +659,13 @@ export function ConnectorGrid({
     setGenerationError(undefined);
     setGenerationStatuses(["Spinning up the portfolio agent..."]);
 
-    // Best-effort contact extraction from the URL findings.
     const contact: { website?: string; github?: string; linkedin?: string } =
       {};
-    if (url.inputUrl) contact.website = url.inputUrl;
+    if (urls[0]?.inputUrl) contact.website = urls[0].inputUrl;
     const allLinks = [
       ...(resume.result?.notableLinks ?? []),
-      ...(url.result?.notableLinks ?? []),
       ...(github.result?.notableLinks ?? []),
+      ...urls.flatMap((u) => u.result?.notableLinks ?? []),
     ];
     if (!contact.github && githubLogin) {
       contact.github = `https://github.com/${githubLogin}`;
@@ -361,8 +679,8 @@ export function ConnectorGrid({
 
     const candidateName =
       resume.result?.title ||
-      url.result?.title ||
       github.result?.title ||
+      urls.find((u) => u.result?.title)?.result?.title ||
       undefined;
 
     try {
@@ -371,10 +689,7 @@ export function ConnectorGrid({
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           inventory: { ...inventory, items },
-          user: {
-            name: candidateName,
-            contact,
-          },
+          user: { name: candidateName, contact },
         }),
       });
       if (!res.ok) {
@@ -453,9 +768,9 @@ export function ConnectorGrid({
     }
   }
 
-  function runGithubExtract() {
-    void runExtract("github", {}, setGithub);
-  }
+  // The "primary" URL slot rendered inside the URL card when count <= 1.
+  const primaryUrl = urls.length === 1 ? urls[0] : undefined;
+  const promotedUrls = urls.length >= 2 ? urls : [];
 
   return (
     <div>
@@ -476,14 +791,22 @@ export function ConnectorGrid({
             connected={github.status === "done"}
             inProgress={isInProgress(github)}
             filename={githubConnected ? githubLogin : undefined}
+            extractedAt={github.extractedAt}
           />
           <p className="mt-5 text-sm leading-relaxed text-muted">
             We&rsquo;ll list your repos and read READMEs through the official
             GitHub MCP server.
           </p>
           <RemainingRow snap={limits.extractGithub} />
-          <div className="mt-6 flex items-center gap-2">
-            {!githubConnected && (
+          {/* Three states: brand-new (no login, no token), previously
+              connected (login persisted but token gone after sign-out), and
+              live-connected. The middle state is the one that used to look
+              like a brand-new user even though we already had findings.
+              On GitHub specifically, Disconnect is the canonical "wipe
+              everything" affordance — it now also clears the saved findings
+              + persisted login, so a separate Clear button is redundant. */}
+          {!githubConnected && !githubLogin && !github.result && (
+            <div className="mt-6 flex flex-wrap items-center gap-2">
               <form action={connectGitHub}>
                 <button
                   type="submit"
@@ -493,8 +816,30 @@ export function ConnectorGrid({
                   <ArrowUpRight className="size-3" />
                 </button>
               </form>
-            )}
-            {githubConnected && github.status !== "done" && (
+            </div>
+          )}
+          {!githubConnected && (githubLogin || github.result) && (
+            <div className="mt-6 flex flex-wrap items-center gap-2">
+              <form action={connectGitHub}>
+                <button
+                  type="submit"
+                  className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-4 py-2 text-xs font-medium text-foreground transition-all hover:border-accent/40"
+                >
+                  Reconnect to refresh
+                </button>
+              </form>
+              <form action={disconnectGitHub}>
+                <button
+                  type="submit"
+                  className="text-[11px] font-mono uppercase tracking-[0.16em] text-muted hover:text-foreground transition-colors"
+                >
+                  Disconnect
+                </button>
+              </form>
+            </div>
+          )}
+          {githubConnected && github.status !== "done" && (
+            <div className="mt-6 flex flex-wrap items-center gap-2">
               <button
                 type="button"
                 onClick={runGithubExtract}
@@ -504,18 +849,6 @@ export function ConnectorGrid({
                 {isInProgress(github) ? "Extracting..." : "Extract from GitHub"}
                 {!isInProgress(github) && <ArrowRight className="size-3" />}
               </button>
-            )}
-            {githubConnected && github.status === "done" && (
-              <button
-                type="button"
-                onClick={runGithubExtract}
-                disabled={isInProgress(github)}
-                className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-4 py-2 text-xs font-medium text-foreground transition-all hover:border-accent/40 disabled:opacity-50"
-              >
-                Re-extract
-              </button>
-            )}
-            {githubConnected && (
               <form action={disconnectGitHub}>
                 <button
                   type="submit"
@@ -524,8 +857,28 @@ export function ConnectorGrid({
                   Disconnect
                 </button>
               </form>
-            )}
-          </div>
+            </div>
+          )}
+          {githubConnected && github.status === "done" && (
+            <div className="mt-6 flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={runGithubExtract}
+                disabled={isInProgress(github)}
+                className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-4 py-2 text-xs font-medium text-foreground transition-all hover:border-accent/40 disabled:opacity-50"
+              >
+                Re-extract
+              </button>
+              <form action={disconnectGitHub}>
+                <button
+                  type="submit"
+                  className="text-[11px] font-mono uppercase tracking-[0.16em] text-muted hover:text-foreground transition-colors"
+                >
+                  Disconnect
+                </button>
+              </form>
+            </div>
+          )}
           <NarrationPanel statuses={github.statuses} />
           {github.result && <FindingsView data={github.result} />}
           {github.status === "limited" && github.rateLimit && (
@@ -540,7 +893,7 @@ export function ConnectorGrid({
           )}
         </li>
 
-        {/* Resume — real Blob upload + extract */}
+        {/* Resume: real Blob upload + extract */}
         <li
           className={`relative rounded-2xl border bg-card p-7 transition-all ${
             resume.status === "done"
@@ -556,12 +909,13 @@ export function ConnectorGrid({
             connected={resume.status === "done"}
             inProgress={isInProgress(resume)}
             filename={resume.filename}
+            extractedAt={resume.extractedAt}
           />
           <p className="mt-5 text-sm leading-relaxed text-muted">
             Upload your resume PDF. We&rsquo;ll read it like a recruiter would.
           </p>
           <RemainingRow snap={limits.extractResume} />
-          <div className="mt-6">
+          <div className="mt-6 flex flex-wrap items-center gap-2">
             <input
               ref={fileRef}
               type="file"
@@ -586,6 +940,26 @@ export function ConnectorGrid({
               {resume.status === "done" ? "Replace" : "Upload PDF"}
               {!isInProgress(resume) && <FileUp className="size-3" />}
             </button>
+            {resume.status === "done" && resume.blobUrl && (
+              <>
+                <button
+                  type="button"
+                  onClick={reExtractResume}
+                  disabled={isInProgress(resume)}
+                  className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-4 py-2 text-xs font-medium text-foreground transition-all hover:border-accent/40 disabled:opacity-50"
+                >
+                  Re-extract
+                </button>
+                <button
+                  type="button"
+                  onClick={removeResumeArtifact}
+                  className="inline-flex items-center gap-1 text-[11px] font-mono uppercase tracking-[0.16em] text-muted hover:text-foreground transition-colors"
+                >
+                  <Trash2 className="size-3" />
+                  Clear
+                </button>
+              </>
+            )}
           </div>
           <NarrationPanel statuses={resume.statuses} />
           {resume.result && <FindingsView data={resume.result} />}
@@ -598,58 +972,141 @@ export function ConnectorGrid({
           {resume.error && <ErrorRow message={resume.error} />}
         </li>
 
-        {/* Personal URL — real extract */}
+        {/* Personal URL */}
         <li
           className={`relative rounded-2xl border bg-card p-7 transition-all ${
-            url.status === "done"
+            primaryUrl?.status === "done"
               ? "border-accent shadow-[0_18px_40px_-24px_rgba(61,45,79,0.4)]"
-              : isInProgress(url)
+              : primaryUrl && isInProgress(primaryUrl)
                 ? "border-accent/50"
                 : "border-border hover:border-accent/30"
           }`}
         >
           <CardHeader
             Icon={Globe}
-            label="Personal URL"
-            connected={url.status === "done"}
-            inProgress={isInProgress(url)}
-            filename={url.inputUrl?.replace(/^https?:\/\//, "")}
+            label={promotedUrls.length > 0 ? "Personal URLs" : "Personal URL"}
+            connected={primaryUrl?.status === "done"}
+            inProgress={primaryUrl ? isInProgress(primaryUrl) : false}
+            filename={
+              promotedUrls.length > 0
+                ? `${urls.length} saved`
+                : primaryUrl?.inputUrl?.replace(/^https?:\/\//, "")
+            }
+            extractedAt={primaryUrl?.extractedAt}
           />
           <p className="mt-5 text-sm leading-relaxed text-muted">
             Blog, Devpost, personal site, anything public.
           </p>
           <RemainingRow snap={limits.extractUrl} />
-          <div className="mt-6 flex items-center gap-2">
-            <input
-              type="url"
-              value={urlInput}
-              onChange={(e) => setUrlInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") handleUrlSubmit();
-              }}
-              placeholder="you.dev"
-              disabled={isInProgress(url)}
-              className="flex-1 rounded-full border border-border bg-background px-4 py-2 text-sm text-foreground placeholder:text-muted/70 focus:border-accent focus:outline-none disabled:opacity-50"
-            />
-            <button
-              type="button"
-              onClick={handleUrlSubmit}
-              disabled={isInProgress(url) || !urlInput.trim()}
-              className="inline-flex items-center gap-1 rounded-full bg-accent px-4 py-2 text-xs font-medium text-accent-foreground transition-opacity hover:opacity-90 disabled:opacity-40"
-            >
-              <Plus className="size-3" />
-              Add
-            </button>
-          </div>
-          <NarrationPanel statuses={url.statuses} />
-          {url.result && <FindingsView data={url.result} />}
-          {url.status === "limited" && url.rateLimit && (
-            <LimitedRow message={url.rateLimit.message} />
+
+          {/* Input field — visible when no URLs yet, or when user explicitly
+              opens "Add another URL". When 2+ exist the list section owns
+              the input instead. */}
+          {showUrlInput && promotedUrls.length === 0 && (
+            <div className="mt-6 flex items-center gap-2">
+              <input
+                type="url"
+                value={urlInput}
+                onChange={(e) => setUrlInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") submitNewUrl();
+                }}
+                placeholder="you.dev"
+                className="flex-1 rounded-full border border-border bg-background px-4 py-2 text-sm text-foreground placeholder:text-muted/70 focus:border-accent focus:outline-none disabled:opacity-50"
+              />
+              <button
+                type="button"
+                onClick={submitNewUrl}
+                disabled={!urlInput.trim()}
+                className="inline-flex items-center gap-1 rounded-full bg-accent px-4 py-2 text-xs font-medium text-accent-foreground transition-opacity hover:opacity-90 disabled:opacity-40"
+              >
+                <Plus className="size-3" />
+                Add
+              </button>
+              {urls.length === 1 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowUrlInput(false);
+                    setUrlInput("");
+                  }}
+                  className="text-muted hover:text-foreground"
+                  aria-label="Cancel"
+                >
+                  <X className="size-4" />
+                </button>
+              )}
+            </div>
           )}
-          {url.status === "soft_failed" && url.softMessage && (
-            <SoftFailRow message={url.softMessage} />
+
+          {/* Single saved URL view (the in-card "stacked row" mode). */}
+          {primaryUrl && (
+            <div className="mt-6">
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => reExtractUrl(primaryUrl)}
+                  disabled={isInProgress(primaryUrl)}
+                  className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-4 py-2 text-xs font-medium text-foreground transition-all hover:border-accent/40 disabled:opacity-50"
+                >
+                  Re-extract
+                </button>
+                <button
+                  type="button"
+                  onClick={() => removeUrlSlot(primaryUrl)}
+                  className="inline-flex items-center gap-1 text-[11px] font-mono uppercase tracking-[0.16em] text-muted hover:text-foreground transition-colors"
+                >
+                  <Trash2 className="size-3" />
+                  Clear
+                </button>
+                {!showUrlInput && (
+                  <button
+                    type="button"
+                    onClick={() => setShowUrlInput(true)}
+                    className="inline-flex items-center gap-1 text-[11px] font-mono uppercase tracking-[0.16em] text-accent hover:opacity-80 transition-opacity"
+                  >
+                    <Plus className="size-3" />
+                    Add another URL
+                  </button>
+                )}
+              </div>
+              <NarrationPanel statuses={primaryUrl.statuses} />
+              {primaryUrl.result && <FindingsView data={primaryUrl.result} />}
+              {primaryUrl.status === "limited" && primaryUrl.rateLimit && (
+                <LimitedRow message={primaryUrl.rateLimit.message} />
+              )}
+              {primaryUrl.status === "soft_failed" && primaryUrl.softMessage && (
+                <SoftFailRow message={primaryUrl.softMessage} />
+              )}
+              {primaryUrl.error && <ErrorRow message={primaryUrl.error} />}
+            </div>
           )}
-          {url.error && <ErrorRow message={url.error} />}
+
+          {/* Promoted-list mode: card body becomes a small "Add a URL" form;
+              the list lives in its own section below the grid. */}
+          {promotedUrls.length > 0 && (
+            <div className="mt-6 flex items-center gap-2">
+              <input
+                type="url"
+                value={urlInput}
+                onChange={(e) => setUrlInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") submitNewUrl();
+                }}
+                placeholder="add another URL"
+                className="flex-1 rounded-full border border-border bg-background px-4 py-2 text-sm text-foreground placeholder:text-muted/70 focus:border-accent focus:outline-none"
+              />
+              <button
+                type="button"
+                onClick={submitNewUrl}
+                disabled={!urlInput.trim()}
+                className="inline-flex items-center gap-1 rounded-full bg-accent px-4 py-2 text-xs font-medium text-accent-foreground transition-opacity hover:opacity-90 disabled:opacity-40"
+              >
+                <Plus className="size-3" />
+                Add
+              </button>
+            </div>
+          )}
         </li>
 
         {/* LinkedIn — coming soon */}
@@ -669,6 +1126,14 @@ export function ConnectorGrid({
           </div>
         </li>
       </ul>
+
+      {promotedUrls.length > 0 && (
+        <UrlListSection
+          urls={promotedUrls}
+          onReExtract={reExtractUrl}
+          onRemove={removeUrlSlot}
+        />
+      )}
 
       <div className="mt-12 flex flex-col items-center gap-3 text-center">
         <button
@@ -738,8 +1203,103 @@ export function ConnectorGrid({
   );
 }
 
+function UrlListSection({
+  urls,
+  onReExtract,
+  onRemove,
+}: {
+  urls: UrlSlot[];
+  onReExtract: (slot: UrlSlot) => void;
+  onRemove: (slot: UrlSlot) => void;
+}) {
+  return (
+    <section className="mt-10">
+      <header className="mb-4 flex items-baseline justify-between">
+        <h2 className="font-serif text-2xl text-foreground">
+          Saved <span className="italic">URLs</span>
+        </h2>
+        <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted">
+          {urls.length} sources
+        </p>
+      </header>
+      <ul className="grid grid-cols-1 gap-4">
+        {urls.map((u) => (
+          <li
+            key={u.id}
+            className={`rounded-2xl border bg-card p-6 transition-all ${
+              u.status === "done"
+                ? "border-accent/30"
+                : isInProgress(u)
+                  ? "border-accent/50"
+                  : "border-border"
+            }`}
+          >
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0 flex-1">
+                <p className="truncate font-mono text-[11px] uppercase tracking-[0.16em] text-muted">
+                  {u.inputUrl.replace(/^https?:\/\//, "")}
+                </p>
+                {u.result?.tagline && (
+                  <p className="mt-2 font-serif text-lg leading-snug text-foreground">
+                    {u.result.tagline}
+                  </p>
+                )}
+                {u.extractedAt && (
+                  <p className="mt-2 text-[11px] text-muted/70">
+                    Extracted {formatRelative(u.extractedAt)}
+                  </p>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => onReExtract(u)}
+                  disabled={isInProgress(u)}
+                  className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-4 py-2 text-xs font-medium text-foreground transition-all hover:border-accent/40 disabled:opacity-50"
+                >
+                  {isInProgress(u) ? "Working..." : "Re-extract"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onRemove(u)}
+                  className="inline-flex items-center gap-1 text-[11px] font-mono uppercase tracking-[0.16em] text-muted hover:text-foreground transition-colors"
+                >
+                  <Trash2 className="size-3" />
+                  Remove
+                </button>
+              </div>
+            </div>
+            <NarrationPanel statuses={u.statuses} />
+            {u.result && <FindingsView data={u.result} />}
+            {u.status === "limited" && u.rateLimit && (
+              <LimitedRow message={u.rateLimit.message} />
+            )}
+            {u.status === "soft_failed" && u.softMessage && (
+              <SoftFailRow message={u.softMessage} />
+            )}
+            {u.error && <ErrorRow message={u.error} />}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 function isInProgress(s: SourceState) {
   return s.status === "uploading" || s.status === "extracting";
+}
+
+function formatRelative(iso: string): string {
+  const then = Date.parse(iso);
+  if (Number.isNaN(then)) return "recently";
+  const diffSec = Math.max(0, Math.floor((Date.now() - then) / 1000));
+  if (diffSec < 60) return "just now";
+  const min = Math.floor(diffSec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const d = Math.floor(hr / 24);
+  return `${d}d ago`;
 }
 
 function CardHeader({
@@ -749,6 +1309,7 @@ function CardHeader({
   inProgress,
   comingSoon,
   filename,
+  extractedAt,
 }: {
   Icon: typeof Github;
   label: string;
@@ -756,6 +1317,7 @@ function CardHeader({
   inProgress?: boolean;
   comingSoon?: boolean;
   filename?: string;
+  extractedAt?: string;
 }) {
   return (
     <div className="flex items-center justify-between">
@@ -781,7 +1343,7 @@ function CardHeader({
           </p>
           {connected && (
             <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.18em] text-accent">
-              Connected
+              {extractedAt ? `Extracted ${formatRelative(extractedAt)}` : "Connected"}
             </p>
           )}
           {inProgress && (

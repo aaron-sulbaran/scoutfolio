@@ -3,6 +3,7 @@
 import { redirect } from "next/navigation";
 import { signIn, signOut, unstable_update, auth } from "@/auth";
 import { patchProfile } from "@/lib/profiles";
+import { removeGithub } from "@/lib/workspace";
 
 export async function signInWithGoogle() {
   await signIn("google", { redirectTo: "/start" });
@@ -66,9 +67,19 @@ export async function connectGitHub() {
 }
 
 export async function disconnectGitHub() {
+  // Wipe everything: live OAuth token on the JWT, persisted login in the
+  // profile, and any saved github findings in the workspace. This is the
+  // user's "forget about my GitHub entirely" affordance.
   await unstable_update({
     githubToken: "",
     githubLogin: "",
   } as unknown as Parameters<typeof unstable_update>[0]);
+  const email = await currentEmail();
+  if (email) {
+    await Promise.all([
+      patchProfile(email, { githubLogin: "" }),
+      removeGithub(email),
+    ]);
+  }
   redirect("/connect");
 }

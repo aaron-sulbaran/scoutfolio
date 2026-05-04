@@ -219,8 +219,9 @@ Agents update this layer at session end via the protocol above. Match existing f
 app/
 ├── layout.tsx                  # Instrument Sans + Instrument Serif + JetBrains Mono
 ├── globals.css                 # @theme tokens (palette, fonts, eyebrow utility, reveal animation, modal keyframes)
-├── page.tsx                    # Landing — Hero, HowItWorks summary, Examples, Closing CTA
+├── page.tsx                    # Landing — JudgeBanner, Hero, HowItWorks summary, Examples, Closing CTA
 ├── how-it-works/page.tsx       # v0-generated three-step explainer
+├── demo/page.tsx               # Judge-facing demo page: hackathon-aware framing, walkthrough video slot, four-stage explainer, sign-in CTA
 ├── demo/maya/page.tsx          # v0 placeholder (not yet pasted)
 ├── start/page.tsx              # /start onboarding screen, single textarea, persists to JWT
 ├── start/start-form.tsx        # Client form + Server Action submit
@@ -234,7 +235,8 @@ app/
 │   ├── blob/upload/route.ts        # Server-side put() to Vercel Blob (private)
 │   ├── extract/route.ts            # Streaming agent: URL fetch OR PDF vision → submitFindings
 │   ├── discover/route.ts           # generateObject: synthesize ranked inventory from findings
-│   ├── generate-portfolio/route.ts # NDJSON streaming, Sonnet 4.6 generateObject, scaffold-plus-fill, validation, returns assembled file list + previewHtml
+│   ├── generate-portfolio/route.ts # NDJSON streaming, Sonnet 4.6 generateObject of structured PortfolioContent (incl. theme), validates, calls composePortfolio, returns assembled files + previewHtml + content + summary
+│   ├── edit-portfolio/route.ts     # NDJSON streaming, takes current PortfolioContent + natural-language message, emits updated content (incl. theme), validates, recomposes, returns new files + previewHtml + content + summary. No-op detection for layout-structure requests.
 │   ├── limits/route.ts             # GET peek of remaining rate-limit counts for the signed-in user
 │   └── export-zip/route.ts         # JSZip-packaged download with locked disclaimer
 ├── auth.ts                     # NextAuth config (jwt + session callbacks expose user.onboardingNarrative and user.displayName)
@@ -244,6 +246,8 @@ components/
 ├── site-footer.tsx             # Single-line footer with hackathon attribution
 ├── scout-mark.tsx              # Tiny aubergine SVG glyph
 ├── grain.tsx                   # Subtle SVG noise overlay (~4% opacity)
+├── demo/
+│   └── demo-video.tsx          # Client component: 16:9 walkthrough player. Resolves NEXT_PUBLIC_DEMO_WALKTHROUGH_URL: Google Drive URLs (file/d/<id>/view, /preview, ?id=...) render via <iframe src=".../preview">; native MP4/MOV/WEBM URLs render via <video> with custom play overlay. Local-dev fallback to /demo/ScoutFolio-Walkthrough.mov. Shows a fallback panel if the source is missing or fails.
 ├── portfolio-examples/         # Animated portfolio example cards with modal previews
 │   ├── portfolio-card.tsx      # Shared card wrapper: auto-fade with stagger + transition variants (fade/slide/dissolve), click-to-open modal
 │   ├── portfolio-modal.tsx     # Full-screen modal with browser chrome, in-modal nav (scrolls to data-section targets)
@@ -255,23 +259,34 @@ components/
 │       ├── jordan-portfolio.tsx # Dark-mode developer portfolio (hero, projects, skills, contact)
 │       └── riya-portfolio.tsx  # Visual-first product design (hero, work grid, brand system, contact)
 ├── connect/
-│   ├── connector-grid.tsx      # GitHub (mock), Resume (Blob+vision), URL (fetch+model), LinkedIn (placeholder), Run discovery, Generate Portfolio streaming + sessionStorage handoff to /preview
+│   ├── connector-grid.tsx      # GitHub (mock), Resume (Blob+vision), URL (fetch+model), LinkedIn (placeholder), Run discovery, Generate Portfolio streaming + sessionStorage v2 handoff (files + previewHtml + content + summary + meta) to /preview
 │   ├── findings-view.tsx       # Per-card extraction summary (tagline, projects, skills, links) + NarrationPanel
 │   └── inventory-panel.tsx     # Discovery output: headline + ranked items with scores + suggested next, plus Generate Portfolio CTA
 └── preview/
-    └── preview-client.tsx      # Sticky header, Preview/Code segmented control, iframe srcDoc preview, file tree + code view, Export modal with locked disclaimer
+    └── preview-client.tsx      # Sticky header, Preview/Code segmented control, iframe srcDoc preview, file tree + code view, Export modal, LEFT-rail chat panel (message list + textarea + Send + Undo), 5-deep linear undo stack of full Generated snapshots, sessionStorage v2 read/write, mobile slide-over drawer
+
+public/
+└── demo/                       # Demo walkthrough assets. Production: NEXT_PUBLIC_DEMO_WALKTHROUGH_URL points at a public Google Drive share link (chosen over Vercel Blob mid-build for embed reliability; Drive's player chrome is the visible tradeoff). Local dev fallback: drop ScoutFolio-Walkthrough.mov here (gitignored AND .vercelignored so vercel deploy never bundles the 595MB binary). Includes a placeholder poster SVG. See README for details.
 
 lib/
 ├── extract-tools.ts            # AI SDK tools: fetchUrl, submitFindings (parsePdf removed, Claude reads PDFs natively)
 ├── extract-client.ts           # NDJSON stream reader + Findings type (incl. extraction_failed soft-fail event)
-├── rate-limit.ts               # Upstash-backed limiter. preflightLimit (peek), recordUsage (consume), peekLimit (snapshot for UI). Per-category buckets (extractResume/Url/Github, discover, generate, upload).
+├── rate-limit.ts               # Upstash-backed limiter. preflightLimit (peek), recordUsage (consume), peekLimit (snapshot for UI). Per-category buckets (extractResume/Url/Github, discover, generate, upload, edit).
 ├── use-limits.ts               # Client hook that fetches /api/limits and exposes refresh()
 └── portfolio-scaffold/
-    └── files.ts                # buildScaffold() returns 8 static files (package.json, tsconfig, next.config, postcss, .gitignore, layout.tsx, globals.css, README) with project name and title interpolated. Do not edit per-user.
+    ├── files.ts                # buildScaffold({ projectName, title, theme }) returns the static project files. layout.tsx, globals.css, and README are theme-driven (font imports + @theme hex tokens + color-scheme).
+    ├── templates.ts            # PortfolioContent type (incl. theme), TSX templates (Hero, Work, About, Contact, Page, _shared), buildDataModule (strips theme), buildPreviewHtml + buildPreviewCss (theme-aware CSS variables, dynamic Google Fonts URL, color-mix instead of hardcoded ink RGBA).
+    ├── compose.ts              # composePortfolio({ projectName, title, content }) — single entrypoint. Forwards content.theme into buildScaffold, returns { files, previewHtml }.
+    ├── schema.ts               # Shared Zod schemas: ContentSchema (no meta), ContentWithMetaSchema, ThemeSchema (mode + 6 hex colors + 3 font enums), validateContent (em-dash, taglineEmphasis substring, hex format).
+    └── themes.ts               # Font registry: 5 display + 5 body + 4 mono fonts mapped to next/font/google import name + Google Fonts CSS spec + CSS variable. DEFAULT_THEME + DARK_PRESET_HINT + isValidHex + dotColorFor + selectionFgFor.
+
+scripts/
+└── upload-demo-video.mjs       # One-off helper: uploads public/demo/<file> to a Vercel Blob PUBLIC store via multipart (required for >100MB). Reads BLOB_READ_WRITE_TOKEN_PUBLIC, DEMO_BLOB_READ_WRITE_TOKEN, or falls back to BLOB_READ_WRITE_TOKEN. Prints the public URL. Currently unused by the live /demo (Drive iframe instead) but kept for future migration back to Blob.
 
 docs/                           # PRDs, next-steps appendix, prompt files
 .env.example                    # Onboarding template; copy to .env.local
 .env.local                      # Gitignored, contains all secrets
+.vercelignore                   # Excludes large local-only demo media (*.mov/*.mp4/*.webm under public/demo/) from `vercel deploy`. CLI deploys ignore .gitignore by default, so this is a separate file.
 ```
 
 ## Current build state (2026-05-04)
@@ -289,21 +304,28 @@ Shipped and working:
 - ✅ Live agent narration via NDJSON streaming events
 - ✅ Inventory display panel with editable Feature/Include/Skip toggles
 - ✅ `app/demo/maya/page.tsx` placeholder route (NOT yet pasted with v0 content)
-- ✅ **Rate limiting**: Upstash Redis fixed-window limits per Google user email, cost-on-success via `preflightLimit` + `recordUsage`. Current limits documented in Layer 1 §"Rate limiting". Per-category extract buckets (resume/url/github), `GET /api/limits` for UI display, soft-fail messaging on empty extractions/discoveries that does not consume a slot. `RATE_LIMIT_BYPASS_EMAILS` env var (with hard-coded owner fallback) lets solo-dev testing skip the limits.
+- ✅ **Rate limiting**: Upstash Redis fixed-window limits per Google user email, cost-on-success via `preflightLimit` + `recordUsage`. Current limits documented in Layer 1 §"Rate limiting". Per-category extract buckets (resume/url/github), `GET /api/limits` for UI display, soft-fail messaging on empty extractions/discoveries that does not consume a slot. `RATE_LIMIT_BYPASS_EMAILS` env var (with hard-coded owner fallback) lets solo-dev testing skip the limits. New `edit` bucket (15 per 24h) for chat-driven edits.
 - ✅ **Supabase Postgres**: user profiles and rate-limit accounting. Schema and routes that read it: TODO document on next session-end update.
 - ✅ **`/start` onboarding** screen with single 500-char textarea, persists to JWT via `unstable_update` as `user.onboardingNarrative`, redirects new users from sign-in. `/connect` redirects back to `/start` if narrative missing.
-- ✅ **Portfolio scaffold** at `lib/portfolio-scaffold/files.ts`. `buildScaffold(name, title)` returns 8 files (package.json, tsconfig, next.config, postcss, .gitignore, layout.tsx, globals.css, README) ready for assembly with agent-generated components.
-- ✅ **`/api/generate-portfolio`**: NDJSON streaming, `claude-sonnet-4-6` `generateObject`, validates each TSX file (default export, no `'use client'`, no em dashes, allowlisted imports), returns assembled file list + self-contained `previewHtml`.
-- ✅ **`/preview` page**: sticky header with Preview/Code segmented control, iframe `srcDoc` preview (sandboxed), collapsible file tree + `<pre><code>` viewer, Export modal with the locked disclaimer text.
+- ✅ **Portfolio scaffold** redesigned around content-as-data. `lib/portfolio-scaffold/` is now five modules: `files.ts` (theme-driven static files), `templates.ts` (TSX templates + preview HTML generator), `compose.ts` (single `composePortfolio()` entrypoint), `schema.ts` (shared Zod + validation), `themes.ts` (font registry + presets + helpers).
+- ✅ **Studio Monograph aesthetic** for generated portfolios: bone paper, warm ink, terracotta-rust accent, stone muted text, hairline rule. Fraunces (display) + DM Sans (body) + IBM Plex Mono (eyebrows) by default. Numbered sections (`§01`, `§02`, `§03`), drop caps on hero intro and first about paragraph, tabular work ledger with year + role + outcome columns, two-column about with metadata sidebar, closing rust rule on contact.
+- ✅ **`/api/generate-portfolio` redesigned**: agent emits structured `PortfolioContent` (no agent-written TSX), validated against shared `ContentSchema`. ScoutFolio assembles export TSX + preview HTML deterministically via `composePortfolio`. Preview HTML is hand-written CSS (no Tailwind CDN) so preview and export track each other in lockstep. `complete` event now includes `content` and a one-line `summary` for the chat panel.
+- ✅ **Theme tokens unlocked for the agent**: `PortfolioContent.theme` carries `mode` (`light` / `dark`), 6 hex colors (paper / ink / stone / rust / rule / card), and 3 font enums (display / body / mono, drawn from a curated 14-font registry). Layout structure stays locked. Default light theme matches the monograph aesthetic; agent system prompts include explicit dark-mode color guidance.
+- ✅ **`/preview` page redesigned** with a left-rail chat editor. Sticky header with Preview/Code segmented control, iframe `srcDoc` preview (sandboxed), collapsible file tree + `<pre><code>` viewer, Export modal with the locked disclaimer text. New left rail: message list (user / assistant / status / notice / error bubbles), 3-row textarea with 500-char cap, Send (Cmd/Ctrl+Enter), Undo button (5-deep linear stack of full `Generated` snapshots). Empty state lists four starter prompts. Mobile: slide-over drawer toggled from the header.
+- ✅ **`/api/edit-portfolio`**: NDJSON streaming, takes `{ currentContent, message, history?, meta }`. Sonnet 4.6 emits a full updated `PortfolioContent` with content + theme edits applied; layout-structure requests trigger a `no_op` event with a friendly notice (no rate-limit consumed). Includes a diff-style summary that names the fields that changed (e.g. "Updated tagline and theme (dark mode)").
+- ✅ **SessionStorage shape v2** (`scoutfolio.generated.v2`): `{ files, previewHtml, content, summary, meta }`. v1 payloads are detected on mount and the user is redirected to `/connect`.
 - ✅ **`/api/export-zip`**: `jszip`-packaged download with `Content-Disposition: attachment`, files namespaced under `<projectName>/`.
 - ✅ **`/settings` page**: auth-gated, accessible from the app-variant nav. Account card shows read-only Google email + name with an editable `displayName` override (capped 60 chars, empty clears). Narrative card mirrors `/start` UX and edits `onboardingNarrative` in place. Both use new `updateDisplayName` / `updateNarrative` Server Actions that write to the JWT via `unstable_update` and redirect with `?saved=` for inline confirmation. `displayName ?? name` fallback wired at the three render sites: `/start`, `/connect`, and `/api/generate-portfolio` candidate name.
+- ✅ **`/demo` judge-facing page**: hackathon-aware framing ("ScoutFolio, on rails"), self-contained walkthrough video player wired via `NEXT_PUBLIC_DEMO_WALKTHROUGH_URL`, four-stage explainer (Connect / Extract / Discover / Generate) with Vercel stack tags, sign-in CTA. Linked from a thin `JudgeBanner` strip above the landing nav that opens `/demo` in a new tab.
+- ✅ **Demo walkthrough video live (via Google Drive)**: `components/demo/demo-video.tsx` resolves `NEXT_PUBLIC_DEMO_WALKTHROUGH_URL` and switches between `<iframe>` (Drive URLs) and `<video>` (native files). Production currently embeds the recorded `.mov` from a public Drive share link. **Half-finished Vercel Blob path is also live and recoverable**: a separate PUBLIC Blob store (`xto4onbaiebsziyu`, env var `VID_BLOB_READ_WRITE_TOKEN`) was created, the 595MB `.mov` was successfully uploaded with `pnpm upload-demo-video` (multipart), and the public URL returns HTTP 200 with `accept-ranges: bytes`. We pivoted to Drive because (a) `<video>` from Drive is broken by the >100MB virus-scan interstitial, but `/preview` iframe works at any size with no friction, and (b) `vercel deploy --prod` from the CLI was bundling the local 595MB `.mov` on every push (now blocked by `.vercelignore`). Tradeoff: Drive's player chrome (logo, share overlay) instead of native controls; cleanliness traded for reliability. Switching back to the Blob URL is a one-line env-var change since the upload is still live. CSP `frame-src` was extended to allow `drive.google.com`; `media-src https:` was kept for the Blob path.
 
 Known issues / not yet done:
 
-- ⚠️ Preview rendering uses agent-emitted `previewHtml` (full HTML doc with Tailwind CDN) instead of `react-dom/server` against the TSX strings. Documented at the top of `app/api/generate-portfolio/route.ts`. Tradeoff: preview HTML and export TSX are independent strings that should agree visually but aren't byte-identical.
-- ⚠️ Anthropic free-tier rate cap (10k tpm on Sonnet 4.6) drove the switch to Haiku 4.5 for extract/discover. Portfolio generation attempts Sonnet 4.6 because output quality matters more there; swap `MODEL` in `app/api/generate-portfolio/route.ts` to `claude-haiku-4-5` if rate-capped.
+- ⚠️ Anthropic free-tier rate cap (10k tpm on Sonnet 4.6) drove the switch to Haiku 4.5 for extract/discover. Portfolio generation and edits attempt Sonnet 4.6 because output quality matters more there; swap `MODEL` in the route files to `claude-haiku-4-5` if rate-capped.
+- ⚠️ Generated portfolios ship a single locked layout (the Studio Monograph). Theme tokens (palette + fonts + light/dark) are agent-editable; layout structure (numbered sections, drop caps, hairline grid, section ordering) is not. Layout-changing requests in chat hit the `no_op` notice. Multiple layout variants are deliberately out of scope for v1.
 - ⚠️ No GitHub MCP integration yet (visual-only mock card on `/connect`). May 4 work, prompt at `docs/CLAUDE_CODE_PROMPT_GITHUB_MCP.md`.
-- ⚠️ No demo mode (PRD §7.11) wired up beyond the placeholder route. (The landing page portfolio examples are illustrative, not the sign-up-free agent walkthrough the PRD describes.)
+- ⚠️ No PRD §7.11 demo mode (sign-up-free interactive agent walkthrough) wired up. The new `/demo` page is the judge-facing static walkthrough we shipped instead; the live agent demo via fixture is still TODO.
+- ⚠️ Demo walkthrough plays via Google Drive iframe, which shows Drive's player chrome (logo, "Open in new tab", share overlay) instead of native browser controls. Functional but not as polished as a native `<video>`. Two paths to clean up: (a) switch `NEXT_PUBLIC_DEMO_WALKTHROUGH_URL` back to the public Blob URL (still live) once we've re-encoded to a smaller mp4 that won't trigger Drive's scan if we ever revert, or (b) keep Drive but mask the chrome with overlay tricks. Listed under "What's next" below.
 
 ## Environment
 
@@ -315,27 +337,32 @@ AUTH_GOOGLE_ID=...              ✓ set, redirect URIs configured for localhost 
 AUTH_GOOGLE_SECRET=...          ✓ set
 ANTHROPIC_API_KEY=...           ✓ set, Tier 1 (10k tpm Sonnet, ~50k tpm Haiku)
 AI_GATEWAY_API_KEY=...          set but unused (kept for future Gateway switchback)
-BLOB_READ_WRITE_TOKEN=...       ✓ set, store is PRIVATE access
+BLOB_READ_WRITE_TOKEN=...       ✓ set, store is PRIVATE access (resume PDFs)
+VID_BLOB_READ_WRITE_TOKEN=...   ✓ set on Vercel, store is PUBLIC access (demo walkthrough; only used by scripts/upload-demo-video.mjs, not by the runtime app)
 SUPABASE_URL=...                ✓ set
 SUPABASE_ANON_KEY=...           ✓ set
 SUPABASE_SERVICE_ROLE_KEY=...   ✓ set (server-only)
 UPSTASH_REDIS_REST_URL=...      ✓ set
 UPSTASH_REDIS_REST_TOKEN=...    ✓ set
+NEXT_PUBLIC_DEMO_WALKTHROUGH_URL=  ✓ set on Vercel (production), points at a public Google Drive share link that demo-video.tsx auto-converts to /preview iframe form. Falls back to /demo/ScoutFolio-Walkthrough.mov locally if unset.
 ```
 
 Vercel envs:
 
 - All five original auth/AI envs present in Production + Preview + Development
-- `BLOB_READ_WRITE_TOKEN` present in all three
+- `BLOB_READ_WRITE_TOKEN` (private store, resume PDFs) present in all three
+- `VID_BLOB_READ_WRITE_TOKEN` (public store for demo media) present in all three
+- `NEXT_PUBLIC_DEMO_WALKTHROUGH_URL` present in Production (and Preview if added; CLI add to Preview without an explicit branch is finicky, dashboard works)
 - Supabase + Upstash envs added during DB and rate-limiting build, present in Production + Preview
-- After any new env var, redeploy with `vercel deploy --prod --yes` because env changes only apply to new deployments
+- After any new env var, redeploy with `vercel deploy --prod --yes` (or push to `main` and let the git integration auto-deploy) because env changes only apply to new deployments
 
 ## What's next, ranked
 
 1. **Real GitHub MCP integration.** Self-contained prompt at `docs/CLAUDE_CODE_PROMPT_GITHUB_MCP.md`. Hand to a fresh Claude Code session before May 4.
-2. **Portfolio generator output quality.** Generated portfolios currently produce rudimentary HTML that looks nothing like the illustrative examples on the landing page. Align the generator's output (prompt, scaffold, and validation) to match the visual fidelity of `components/portfolio-examples/portfolios/` (distinct field aesthetics, proper typography, dark-mode SWE variant, editorial structure). This is a trust gap: the landing page promises polish that the actual output doesn't yet deliver.
-3. **Demo mode** (PRD §7.11) wired with a real prebuilt fixture so judges can experience the agent without signing up.
-4. **GitHub data into discovery** (May 4 scope). Once OAuth is live, wire `lib/github-tools.ts` `fetchUserRepos(token)` into `/api/discover` as a parallel finding source.
+2. **PRD §7.11 demo mode** wired with a real prebuilt fixture so judges can experience the agent end-to-end without signing up. The new `/demo` page is the static framing; the live fixture-driven walkthrough is the next layer.
+3. **Polish the demo walkthrough player** (post-hackathon). Either re-encode to a smaller mp4 and switch `NEXT_PUBLIC_DEMO_WALKTHROUGH_URL` back to the public Blob URL (still live) for native `<video>` controls, or keep Drive and mask the player chrome with an overlay. Drive iframe is the current production embed; Blob upload is dormant but ready.
+4. **Layout variants for the portfolio generator** (post-hackathon). The content-as-data pipeline already supports adding new layouts as sibling templates next to `templates.ts`; the agent would gain a `layout` enum alongside the existing theme tokens.
+5. **GitHub data into discovery** (May 4 scope). Once OAuth is live, wire `lib/github-tools.ts` `fetchUserRepos(token)` into `/api/discover` as a parallel finding source.
 
 ## Last words
 

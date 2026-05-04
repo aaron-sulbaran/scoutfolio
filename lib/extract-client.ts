@@ -9,7 +9,12 @@ export type Findings = {
 export type ExtractEvent =
   | { type: "status"; text: string }
   | { type: "delta"; text: string }
-  | { type: "result"; data: Findings }
+  | {
+      type: "result";
+      data: Findings;
+      artifactId?: string;
+      extractedAt?: string;
+    }
   | { type: "extraction_failed"; message: string }
   | { type: "done" }
   | { type: "error"; message: string };

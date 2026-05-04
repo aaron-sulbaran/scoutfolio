@@ -4,6 +4,7 @@ import { Grain } from "@/components/grain";
 import { SiteNav } from "@/components/site-nav";
 import { SiteFooter } from "@/components/site-footer";
 import { ConnectorGrid } from "@/components/connect/connector-grid";
+import { getWorkspace } from "@/lib/workspace";
 
 export default async function ConnectPage({
   searchParams,
@@ -19,6 +20,7 @@ export default async function ConnectPage({
   }
   const { error } = await searchParams;
   const githubConfigError = error === "github-not-configured";
+  const workspace = await getWorkspace(session.user!.email!);
 
   const fullName = session.user?.displayName ?? session.user?.name;
   const firstName = fullName?.split(" ")[0] ?? "you";
@@ -49,6 +51,7 @@ export default async function ConnectPage({
                 githubLogin={session.user?.githubLogin}
                 githubConnected={Boolean(session.user?.githubToken)}
                 githubConfigError={githubConfigError}
+                initialWorkspace={workspace}
               />
             </div>
           </div>
