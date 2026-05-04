@@ -1,0 +1,9 @@
+node_modules
+.next
+.git
+.env*.bak
+
+# Large local-only demo media (served from Vercel Blob in production via NEXT_PUBLIC_DEMO_WALKTHROUGH_URL)
+public/demo/*.mov
+public/demo/*.mp4
+public/demo/*.webm

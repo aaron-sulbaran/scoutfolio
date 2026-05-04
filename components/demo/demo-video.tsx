@@ -3,12 +3,49 @@
 import { useRef, useState } from "react";
 import { Play } from "lucide-react";
 
-const VIDEO_SRC =
+const RAW_SRC =
   process.env.NEXT_PUBLIC_DEMO_WALKTHROUGH_URL?.trim() ||
   "/demo/ScoutFolio-Walkthrough.mov";
 const POSTER_SRC = "/demo/walkthrough-poster.svg";
 
+function toDriveEmbed(url: string): string | null {
+  try {
+    const u = new URL(url);
+    if (!/(^|\.)drive\.google\.com$/.test(u.hostname)) return null;
+    if (u.pathname.endsWith("/preview")) return url;
+    const m = u.pathname.match(/\/file\/d\/([^/]+)/);
+    if (m) return `https://drive.google.com/file/d/${m[1]}/preview`;
+    const id = u.searchParams.get("id");
+    if (id) return `https://drive.google.com/file/d/${id}/preview`;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+const driveEmbed = toDriveEmbed(RAW_SRC);
+
 export function DemoVideo() {
+  if (driveEmbed) {
+    return (
+      <div className="relative overflow-hidden rounded-2xl border border-border bg-card shadow-[0_30px_80px_-40px_rgba(61,45,79,0.35)]">
+        <div className="relative aspect-video w-full bg-foreground/5">
+          <iframe
+            src={driveEmbed}
+            title="ScoutFolio walkthrough"
+            allow="autoplay; fullscreen"
+            allowFullScreen
+            className="absolute inset-0 size-full"
+          />
+        </div>
+      </div>
+    );
+  }
+
+  return <NativeVideo />;
+}
+
+function NativeVideo() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [started, setStarted] = useState(false);
   const [missing, setMissing] = useState(false);
@@ -28,7 +65,7 @@ export function DemoVideo() {
         <video
           ref={videoRef}
           className="absolute inset-0 size-full object-cover"
-          src={VIDEO_SRC}
+          src={RAW_SRC}
           poster={POSTER_SRC}
           controls={started}
           playsInline
@@ -55,15 +92,12 @@ export function DemoVideo() {
               Walkthrough video coming soon
             </p>
             <p className="max-w-sm text-sm text-foreground">
-              Host the file outside Git (GitHub rejects files over 100MB). Set{" "}
+              Set{" "}
               <code className="font-mono text-xs text-accent">
                 NEXT_PUBLIC_DEMO_WALKTHROUGH_URL
               </code>{" "}
-              to a public video URL, or keep{" "}
-              <code className="font-mono text-xs text-accent">
-                public/demo/ScoutFolio-Walkthrough.mov
-              </code>{" "}
-              locally only (gitignored) for dev.
+              to a public video URL (e.g. a Vercel Blob `.mov`/`.mp4`, or a Google Drive{" "}
+              <code className="font-mono text-xs text-accent">/preview</code> link).
             </p>
           </div>
         )}

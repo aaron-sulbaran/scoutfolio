@@ -10,6 +10,11 @@ const cspDirectives: Record<string, string[]> = {
   "style-src": ["'self'", "'unsafe-inline'"],
   "img-src": ["'self'", "data:", "blob:"],
   "media-src": ["'self'", "https:"],
+  "frame-src": [
+    "'self'",
+    "https://drive.google.com",
+    "https://*.google.com",
+  ],
   "font-src": ["'self'", "data:"],
   "connect-src": isProd
     ? ["'self'"]
