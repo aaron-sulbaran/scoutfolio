@@ -4,9 +4,10 @@ import { anthropic } from "@ai-sdk/anthropic";
 import { z } from "zod";
 import type { Findings } from "@/lib/extract-client";
 import {
-  enforceLimit,
+  preflightLimit,
   rateLimitedResponse,
   rateLimitMessage,
+  recordUsage,
 } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
@@ -60,7 +61,7 @@ export async function POST(req: Request) {
     return new Response("Unauthorized", { status: 401 });
   }
 
-  const limit = await enforceLimit("discover", session.user.email);
+  const limit = await preflightLimit("discover", session.user.email);
   if (!limit.ok) {
     return rateLimitedResponse(
       limit,
@@ -96,11 +97,12 @@ export async function POST(req: Request) {
 
   const targetRole = body.targetRole ?? "the role they're targeting";
 
-  const result = await generateObject({
-    model: anthropic("claude-haiku-4-5"),
-    schema: InventorySchema,
-    system: `You are ScoutFolio's portfolio-curation agent. Take raw extracted content from multiple sources and produce a recruiter-ready ranked inventory for a student. Be opinionated. Lead with specifics. Avoid filler ("passionate about", "team player", "experienced in"). Write copy that would survive a 6-second resume scan.`,
-    prompt: `Build a portfolio inventory for a student targeting ${targetRole}.
+  try {
+    const result = await generateObject({
+      model: anthropic("claude-haiku-4-5"),
+      schema: InventorySchema,
+      system: `You are ScoutFolio's portfolio-curation agent. Take raw extracted content from multiple sources and produce a recruiter-ready ranked inventory for a student. Be opinionated. Lead with specifics. Avoid filler ("passionate about", "team player", "experienced in"). Write copy that would survive a 6-second resume scan.`,
+      prompt: `Build a portfolio inventory for a student targeting ${targetRole}.
 
 Extracted content from their connected sources:
 
@@ -110,7 +112,30 @@ Produce:
 1. A one-line editorial headline that positions the candidate.
 2. 4–8 ranked inventory items. Each combines info across sources where it strengthens the entry. Score 1-10 for portfolio fit. Action: 'feature' for the top 2-3, 'include' for the next tier, 'skip' for weak entries.
 3. 2-3 specific projects they should build next to strengthen the portfolio.`,
-  });
+    });
 
-  return Response.json(result.object, { headers: limit.headers });
+    if (!result.object?.items?.length) {
+      return Response.json(
+        {
+          error: "discovery_failed",
+          message:
+            "Discovery didn't produce any inventory items. Try again with different sources, your usage wasn't affected.",
+        },
+        { status: 502 }
+      );
+    }
+
+    await recordUsage("discover", session.user.email);
+    return Response.json(result.object, { headers: limit.headers });
+  } catch (err) {
+    console.error("[discover] generateObject error:", err);
+    return Response.json(
+      {
+        error: "discovery_failed",
+        message:
+          "Discovery hit a snag (likely a model rate limit). Try again in a minute, your usage wasn't affected.",
+      },
+      { status: 502 }
+    );
+  }
 }

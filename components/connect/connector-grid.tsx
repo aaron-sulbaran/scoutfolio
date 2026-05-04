@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   ArrowRight,
   ArrowUpRight,
@@ -18,16 +19,27 @@ import { FindingsView, NarrationPanel } from "@/components/connect/findings-view
 import {
   InventoryPanel,
   type Inventory,
+  type InventoryItem,
 } from "@/components/connect/inventory-panel";
+import { useLimits } from "@/lib/use-limits";
 
-type SourceId = "github" | "resume" | "url";
-type Status = "idle" | "uploading" | "extracting" | "done" | "error" | "limited";
+const GENERATED_STORAGE_KEY = "scoutfolio.generated.v1";
+
+type Status =
+  | "idle"
+  | "uploading"
+  | "extracting"
+  | "done"
+  | "error"
+  | "limited"
+  | "soft_failed";
 
 type SourceState = {
   status: Status;
   statuses: string[];
   result?: Findings;
   error?: string;
+  softMessage?: string;
   rateLimit?: { message: string; resetAt: string };
   blobUrl?: string;
   filename?: string;
@@ -59,12 +71,20 @@ export function ConnectorGrid() {
   const [urlInput, setUrlInput] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
 
+  const router = useRouter();
+  const { limits, refresh: refreshLimits } = useLimits();
   const [discoveryLoading, setDiscoveryLoading] = useState(false);
+  const [discoverySoftFail, setDiscoverySoftFail] = useState<
+    string | undefined
+  >();
   const [discoveryError, setDiscoveryError] = useState<string | undefined>();
   const [discoveryLimit, setDiscoveryLimit] = useState<
     { message: string; resetAt: string } | undefined
   >();
   const [inventory, setInventory] = useState<Inventory | undefined>();
+  const [generating, setGenerating] = useState(false);
+  const [generationStatuses, setGenerationStatuses] = useState<string[]>([]);
+  const [generationError, setGenerationError] = useState<string | undefined>();
 
   const isConnected = (s: SourceState) =>
     s.status === "done" || s.status === "extracting" || s.status === "uploading";
@@ -116,6 +136,9 @@ export function ConnectorGrid() {
         return;
       }
 
+      let softMessage: string | undefined;
+      let gotResult = false;
+
       for await (const event of readNdjsonStream(res)) {
         if (event.type === "status") {
           setState((prev) => ({
@@ -123,9 +146,23 @@ export function ConnectorGrid() {
             statuses: [...prev.statuses, event.text],
           }));
         } else if (event.type === "result") {
+          gotResult = true;
           setState((prev) => ({ ...prev, result: event.data }));
+        } else if (event.type === "extraction_failed") {
+          softMessage = event.message;
         } else if (event.type === "done") {
-          setState((prev) => ({ ...prev, status: "done" }));
+          if (gotResult) {
+            setState((prev) => ({ ...prev, status: "done" }));
+            void refreshLimits();
+          } else {
+            setState((prev) => ({
+              ...prev,
+              status: "soft_failed",
+              softMessage:
+                softMessage ??
+                "That source didn't return anything. Try again, your usage wasn't affected.",
+            }));
+          }
         } else if (event.type === "error") {
           setState((prev) => ({
             ...prev,
@@ -228,6 +265,7 @@ export function ConnectorGrid() {
     setDiscoveryLoading(true);
     setDiscoveryError(undefined);
     setDiscoveryLimit(undefined);
+    setDiscoverySoftFail(undefined);
     setInventory(undefined);
 
     try {
@@ -245,12 +283,30 @@ export function ConnectorGrid() {
           });
           return;
         }
+        // Server-side soft fail (no inventory items, model rate-cap, etc.)
+        // returns 502 with a structured body. Surface the friendly message and
+        // do NOT count this against the user.
+        if (res.status === 502) {
+          try {
+            const body = (await res.clone().json()) as {
+              error?: string;
+              message?: string;
+            };
+            if (body.error === "discovery_failed" && body.message) {
+              setDiscoverySoftFail(body.message);
+              return;
+            }
+          } catch {
+            /* fall through */
+          }
+        }
         const text = await res.text();
         setDiscoveryError(`${res.status}: ${text}`);
         return;
       }
       const data = (await res.json()) as Inventory;
       setInventory(data);
+      void refreshLimits();
       setTimeout(() => {
         document
           .getElementById("inventory")
@@ -260,6 +316,116 @@ export function ConnectorGrid() {
       setDiscoveryError(err instanceof Error ? err.message : String(err));
     } finally {
       setDiscoveryLoading(false);
+    }
+  }
+
+  async function runGeneration(items: InventoryItem[]) {
+    if (!inventory) return;
+    setGenerating(true);
+    setGenerationError(undefined);
+    setGenerationStatuses(["Spinning up the portfolio agent..."]);
+
+    // Best-effort contact extraction from the URL findings.
+    const contact: { website?: string; github?: string; linkedin?: string } =
+      {};
+    if (url.inputUrl) contact.website = url.inputUrl;
+    const allLinks = [
+      ...(resume.result?.notableLinks ?? []),
+      ...(url.result?.notableLinks ?? []),
+    ];
+    for (const link of allLinks) {
+      const u = link.url.toLowerCase();
+      if (!contact.github && u.includes("github.com")) contact.github = link.url;
+      if (!contact.linkedin && u.includes("linkedin.com"))
+        contact.linkedin = link.url;
+    }
+
+    const candidateName =
+      resume.result?.title || url.result?.title || undefined;
+
+    try {
+      const res = await fetch("/api/generate-portfolio", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          inventory: { ...inventory, items },
+          user: {
+            name: candidateName,
+            contact,
+          },
+        }),
+      });
+      if (!res.ok) {
+        const limited = await parseRateLimit(res);
+        if (limited) {
+          setGenerationError(limited.message);
+          return;
+        }
+        const text = await res.text();
+        setGenerationError(`${res.status}: ${text}`);
+        return;
+      }
+
+      let complete:
+        | {
+            files: { path: string; content: string }[];
+            previewHtml: string;
+            meta: { name: string; title: string };
+          }
+        | null = null;
+
+      if (!res.body) {
+        setGenerationError("No response body from agent.");
+        return;
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          let evt: { type: string; [k: string]: unknown };
+          try {
+            evt = JSON.parse(trimmed);
+          } catch {
+            continue;
+          }
+          if (evt.type === "status") {
+            const text = String(evt.text);
+            setGenerationStatuses((prev) => [...prev, text]);
+          } else if (evt.type === "file_complete") {
+            const path = String(evt.path);
+            setGenerationStatuses((prev) => [...prev, `Wrote ${path}`]);
+          } else if (evt.type === "complete") {
+            complete = evt.data as typeof complete;
+          } else if (evt.type === "error") {
+            setGenerationError(String(evt.message));
+          }
+        }
+      }
+
+      if (complete) {
+        try {
+          sessionStorage.setItem(
+            GENERATED_STORAGE_KEY,
+            JSON.stringify(complete)
+          );
+        } catch (err) {
+          console.warn("[connector-grid] sessionStorage failed:", err);
+        }
+        void refreshLimits();
+        router.push("/preview");
+      }
+    } catch (err) {
+      setGenerationError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setGenerating(false);
     }
   }
 
@@ -291,6 +457,7 @@ export function ConnectorGrid() {
             We&rsquo;ll surface your strongest repos and READMEs.
             <span className="ml-1 text-[11px] text-muted/60">(MCP wiring lands May 4)</span>
           </p>
+          <RemainingRow snap={limits.extractGithub} />
           <div className="mt-6">
             <button
               type="button"
@@ -327,6 +494,7 @@ export function ConnectorGrid() {
           <p className="mt-5 text-sm leading-relaxed text-muted">
             Upload your resume PDF. We&rsquo;ll read it like a recruiter would.
           </p>
+          <RemainingRow snap={limits.extractResume} />
           <div className="mt-6">
             <input
               ref={fileRef}
@@ -358,6 +526,9 @@ export function ConnectorGrid() {
           {resume.status === "limited" && resume.rateLimit && (
             <LimitedRow message={resume.rateLimit.message} />
           )}
+          {resume.status === "soft_failed" && resume.softMessage && (
+            <SoftFailRow message={resume.softMessage} />
+          )}
           {resume.error && <ErrorRow message={resume.error} />}
         </li>
 
@@ -381,6 +552,7 @@ export function ConnectorGrid() {
           <p className="mt-5 text-sm leading-relaxed text-muted">
             Blog, Devpost, personal site, anything public.
           </p>
+          <RemainingRow snap={limits.extractUrl} />
           <div className="mt-6 flex items-center gap-2">
             <input
               type="url"
@@ -407,6 +579,9 @@ export function ConnectorGrid() {
           {url.result && <FindingsView data={url.result} />}
           {url.status === "limited" && url.rateLimit && (
             <LimitedRow message={url.rateLimit.message} />
+          )}
+          {url.status === "soft_failed" && url.softMessage && (
+            <SoftFailRow message={url.softMessage} />
           )}
           {url.error && <ErrorRow message={url.error} />}
         </li>
@@ -462,9 +637,21 @@ export function ConnectorGrid() {
             <>Add at least one source to begin.</>
           )}
         </p>
+        {limits.discover && (
+          <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted/70">
+            {limits.discover.bypass
+              ? "Unlimited (dev)"
+              : `${limits.discover.remaining} of ${limits.discover.max} discovery runs left today`}
+          </p>
+        )}
         {discoveryLimit && (
           <div className="mt-3 max-w-md">
             <LimitedRow message={discoveryLimit.message} />
+          </div>
+        )}
+        {discoverySoftFail && (
+          <div className="mt-3 max-w-md">
+            <SoftFailRow message={discoverySoftFail} />
           </div>
         )}
       </div>
@@ -474,6 +661,11 @@ export function ConnectorGrid() {
           loading={discoveryLoading}
           inventory={inventory}
           error={discoveryError}
+          onGenerate={runGeneration}
+          generating={generating}
+          generateRemaining={limits.generate}
+          generationStatuses={generationStatuses}
+          generationError={generationError}
         />
       </div>
     </div>
@@ -539,6 +731,32 @@ function CardHeader({
         </div>
       </div>
       {comingSoon && <Lock className="size-3.5 text-muted" strokeWidth={1.75} />}
+    </div>
+  );
+}
+
+function RemainingRow({
+  snap,
+}: {
+  snap?: { remaining: number; max: number; bypass?: boolean };
+}) {
+  if (!snap) return null;
+  return (
+    <p className="mt-3 font-mono text-[10px] uppercase tracking-[0.18em] text-muted/70">
+      {snap.bypass
+        ? "Unlimited (dev)"
+        : `${snap.remaining} of ${snap.max} left today`}
+    </p>
+  );
+}
+
+function SoftFailRow({ message }: { message: string }) {
+  return (
+    <div className="mt-4 rounded-md border border-border bg-background p-3.5 text-[13px] leading-relaxed text-foreground">
+      <p className="mb-1 font-mono text-[10px] uppercase tracking-[0.18em] text-muted">
+        That didn&rsquo;t work
+      </p>
+      <p className="text-muted">{message}</p>
     </div>
   );
 }

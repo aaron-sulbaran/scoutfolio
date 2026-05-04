@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { Loader2, Sparkles, Star } from "lucide-react";
+import { ArrowRight, Loader2, Sparkles, Star } from "lucide-react";
+import { NarrationPanel } from "@/components/connect/findings-view";
 
 export type InventoryItem = {
   title: string;
@@ -22,6 +23,11 @@ type Props = {
   loading: boolean;
   inventory?: Inventory;
   error?: string;
+  onGenerate?: (items: InventoryItem[]) => void;
+  generating?: boolean;
+  generationStatuses?: string[];
+  generationError?: string;
+  generateRemaining?: { remaining: number; max: number; bypass?: boolean };
 };
 
 const ACTION_LABEL: Record<InventoryItem["suggestedAction"], string> = {
@@ -30,7 +36,27 @@ const ACTION_LABEL: Record<InventoryItem["suggestedAction"], string> = {
   skip: "Skip",
 };
 
-export function InventoryPanel({ loading, inventory, error }: Props) {
+export function InventoryPanel({
+  loading,
+  inventory,
+  error,
+  onGenerate,
+  generating,
+  generationStatuses,
+  generationError,
+  generateRemaining,
+}: Props) {
+  const [items, setItems] = useState<InventoryItem[]>(
+    () => inventory?.items ?? []
+  );
+  // Reset overrides when a new inventory arrives. This is the React-recommended
+  // render-time-setState pattern for "adjust state when a prop changes."
+  const [prevInventory, setPrevInventory] = useState(inventory);
+  if (inventory !== prevInventory) {
+    setPrevInventory(inventory);
+    setItems(inventory?.items ?? []);
+  }
+
   if (loading) {
     return (
       <section className="mt-16 rounded-2xl border border-accent/30 bg-card p-8 md:p-12">
@@ -61,6 +87,22 @@ export function InventoryPanel({ loading, inventory, error }: Props) {
 
   if (!inventory) return null;
 
+  function handleAction(
+    index: number,
+    action: InventoryItem["suggestedAction"]
+  ) {
+    setItems((prev) =>
+      prev.map((it, i) =>
+        i === index ? { ...it, suggestedAction: action } : it
+      )
+    );
+  }
+
+  const featureOrIncludeCount = items.filter(
+    (i) => i.suggestedAction !== "skip"
+  ).length;
+  const canGenerate = featureOrIncludeCount > 0 && !generating;
+
   return (
     <section className="mt-16">
       <div className="flex items-center gap-2">
@@ -79,8 +121,13 @@ export function InventoryPanel({ loading, inventory, error }: Props) {
       </p>
 
       <ul className="mt-8 space-y-4">
-        {inventory.items.map((item, i) => (
-          <InventoryItemCard key={item.title + i} item={item} index={i} />
+        {items.map((item, i) => (
+          <InventoryItemCard
+            key={item.title + i}
+            item={item}
+            index={i}
+            onAction={(a) => handleAction(i, a)}
+          />
         ))}
       </ul>
 
@@ -104,6 +151,55 @@ export function InventoryPanel({ loading, inventory, error }: Props) {
           </ul>
         </div>
       )}
+
+      {onGenerate && (
+        <div className="mt-12 flex flex-col items-center gap-3 text-center">
+          <button
+            type="button"
+            disabled={!canGenerate}
+            onClick={() => onGenerate(items)}
+            className={`inline-flex items-center gap-2 rounded-full px-7 py-3.5 text-sm font-medium transition-all ${
+              canGenerate
+                ? "cursor-pointer bg-accent text-accent-foreground shadow-[0_1px_0_rgba(255,255,255,0.08)_inset,0_12px_30px_-12px_rgba(61,45,79,0.65)] hover:opacity-90 active:translate-y-[0.5px]"
+                : "cursor-not-allowed bg-accent/30 text-accent-foreground/70"
+            }`}
+          >
+            {generating ? (
+              <>
+                <Loader2 className="size-3.5 animate-spin" />
+                Generating your portfolio&hellip;
+              </>
+            ) : (
+              <>
+                Generate portfolio
+                <ArrowRight className="size-3.5" />
+              </>
+            )}
+          </button>
+          <p className="text-xs text-muted">
+            {featureOrIncludeCount} item
+            {featureOrIncludeCount === 1 ? "" : "s"} will go on the site.
+            Skipped items are excluded.
+          </p>
+          {generateRemaining && (
+            <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted/70">
+              {generateRemaining.bypass
+                ? "Unlimited portfolios (dev)"
+                : `${generateRemaining.remaining} of ${generateRemaining.max} portfolio builds left today`}
+            </p>
+          )}
+          {generationStatuses && (
+            <div className="mt-2 w-full max-w-xl text-left">
+              <NarrationPanel statuses={generationStatuses} />
+            </div>
+          )}
+          {generationError && (
+            <div className="mt-3 max-w-md rounded-md border border-red-200 bg-red-50/40 p-3 text-xs text-red-900">
+              {generationError}
+            </div>
+          )}
+        </div>
+      )}
     </section>
   );
 }
@@ -111,12 +207,13 @@ export function InventoryPanel({ loading, inventory, error }: Props) {
 function InventoryItemCard({
   item,
   index,
+  onAction,
 }: {
   item: InventoryItem;
   index: number;
+  onAction: (a: InventoryItem["suggestedAction"]) => void;
 }) {
-  const [action, setAction] = useState(item.suggestedAction);
-
+  const action = item.suggestedAction;
   const cardTone =
     action === "feature"
       ? "border-accent shadow-[0_18px_40px_-24px_rgba(61,45,79,0.4)]"
@@ -157,7 +254,7 @@ function InventoryItemCard({
 
         <div className="flex flex-col items-end gap-3 shrink-0">
           <ScoreBadge score={item.strengthScore} />
-          <ActionToggle action={action} onChange={setAction} />
+          <ActionToggle action={action} onChange={onAction} />
         </div>
       </div>
     </li>

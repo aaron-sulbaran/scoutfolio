@@ -185,7 +185,7 @@ function Examples() {
           </p>
         </div>
 
-        <div className="mt-14 grid grid-cols-1 gap-6 md:grid-cols-3 lg:gap-7">
+        <div className="mt-14 grid grid-cols-1 gap-6 lg:gap-8">
           <MayaCard />
           <JordanCard />
           <RiyaCard />

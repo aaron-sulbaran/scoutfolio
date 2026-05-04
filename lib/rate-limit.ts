@@ -8,18 +8,35 @@ const token =
 
 const redis = url && token ? new Redis({ url, token }) : null;
 
+// Identifiers (Google emails) that bypass all rate limits. Used for solo-dev
+// testing so the owner doesn't lock themselves out while iterating. Configure
+// via comma-separated RATE_LIMIT_BYPASS_EMAILS; falls back to a hard-coded
+// owner email so the bypass works before the env var lands in Vercel.
+const BYPASS_EMAILS = new Set(
+  (process.env.RATE_LIMIT_BYPASS_EMAILS ?? "aarondsulbaran@gmail.com")
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean)
+);
+
 const LIMITS = {
-  extract: { max: 5, window: "24 h" },
-  discover: { max: 5, window: "24 h" },
+  extractResume: { max: 6, window: "24 h" },
+  extractUrl: { max: 6, window: "24 h" },
+  extractGithub: { max: 6, window: "24 h" },
+  discover: { max: 6, window: "24 h" },
   upload: { max: 10, window: "24 h" },
+  generate: { max: 2, window: "24 h" },
 } as const;
 
 export type LimiterKey = keyof typeof LIMITS;
 
 const limiters: Record<LimiterKey, Ratelimit | null> = {
-  extract: build("extract"),
+  extractResume: build("extractResume"),
+  extractUrl: build("extractUrl"),
+  extractGithub: build("extractGithub"),
   discover: build("discover"),
   upload: build("upload"),
+  generate: build("generate"),
 };
 
 function build(key: LimiterKey): Ratelimit | null {
@@ -27,13 +44,20 @@ function build(key: LimiterKey): Ratelimit | null {
   const cfg = LIMITS[key];
   return new Ratelimit({
     redis,
-    // Fixed window matches a "5 per 24h" budget cleanly: clear daily quota,
+    // Fixed window matches a "N per 24h" budget cleanly: clear daily quota,
     // predictable reset, and one Redis op per check.
     limiter: Ratelimit.fixedWindow(cfg.max, cfg.window),
     prefix: `scoutfolio:rl:${key}`,
     analytics: true,
   });
 }
+
+export type LimitSnapshot = {
+  remaining: number;
+  max: number;
+  resetMs: number;
+  bypass?: boolean;
+};
 
 export type LimitResult =
   | {
@@ -47,15 +71,62 @@ export type LimitResult =
       resetMs: number;
     };
 
-export async function enforceLimit(
+function isBypass(identifier: string): boolean {
+  return BYPASS_EMAILS.has(identifier.toLowerCase());
+}
+
+/**
+ * Read remaining count without consuming a slot. Used by /api/limits and as
+ * a pre-check inside routes so we can reject requests when the bucket is
+ * empty without recording a usage event for failed work.
+ */
+export async function peekLimit(
+  key: LimiterKey,
+  identifier: string
+): Promise<LimitSnapshot> {
+  const cfg = LIMITS[key];
+  if (isBypass(identifier)) {
+    return {
+      remaining: cfg.max,
+      max: cfg.max,
+      resetMs: Date.now() + 24 * 60 * 60 * 1000,
+      bypass: true,
+    };
+  }
+  const limiter = limiters[key];
+  if (!limiter) {
+    if (process.env.NODE_ENV === "production") {
+      return {
+        remaining: 0,
+        max: cfg.max,
+        resetMs: Date.now() + 60_000,
+      };
+    }
+    return {
+      remaining: cfg.max,
+      max: cfg.max,
+      resetMs: Date.now() + 24 * 60 * 60 * 1000,
+    };
+  }
+  const { remaining, reset, limit } = await limiter.getRemaining(identifier);
+  return { remaining, max: limit, resetMs: reset };
+}
+
+/**
+ * Pre-flight check that does NOT consume a slot. Returns the same shape as
+ * the old enforceLimit so route code can short-circuit on `ok: false` and
+ * surface the existing rate-limited response. Pair this with `recordUsage`
+ * after the route observes a successful outcome.
+ */
+export async function preflightLimit(
   key: LimiterKey,
   identifier: string
 ): Promise<LimitResult> {
-  const limiter = limiters[key];
+  if (isBypass(identifier)) {
+    return { ok: true, headers: { "X-RateLimit-Bypass": "1" } };
+  }
 
-  // No Redis configured. Fail OPEN locally so dev still works without an
-  // Upstash store, fail CLOSED in production so a misconfig doesn't silently
-  // disable cost protection.
+  const limiter = limiters[key];
   if (!limiter) {
     if (process.env.NODE_ENV === "production") {
       const resetMs = Date.now() + 60_000;
@@ -69,19 +140,36 @@ export async function enforceLimit(
     return { ok: true, headers: {} };
   }
 
-  const { success, limit, remaining, reset } = await limiter.limit(identifier);
-  const retryAfterSec = Math.max(0, Math.ceil((reset - Date.now()) / 1000));
-  const headers = rateLimitHeaders(
-    limit,
-    remaining,
-    reset,
-    success ? undefined : retryAfterSec
-  );
-
-  if (!success) {
-    return { ok: false, limit, resetMs: reset, headers };
+  const { remaining, reset, limit } = await limiter.getRemaining(identifier);
+  if (remaining <= 0) {
+    const retryAfterSec = Math.max(0, Math.ceil((reset - Date.now()) / 1000));
+    return {
+      ok: false,
+      limit,
+      resetMs: reset,
+      headers: rateLimitHeaders(limit, 0, reset, retryAfterSec),
+    };
   }
-  return { ok: true, headers };
+  return {
+    ok: true,
+    headers: rateLimitHeaders(limit, remaining, reset),
+  };
+}
+
+/**
+ * Consume one slot for `key` against `identifier`. Call this only after the
+ * route has observed a successful outcome (e.g. extract returned non-empty
+ * findings, discover returned an inventory, generate returned files). Failing
+ * paths skip this and the user's quota is preserved.
+ */
+export async function recordUsage(
+  key: LimiterKey,
+  identifier: string
+): Promise<void> {
+  if (isBypass(identifier)) return;
+  const limiter = limiters[key];
+  if (!limiter) return;
+  await limiter.limit(identifier);
 }
 
 function rateLimitHeaders(
@@ -124,11 +212,17 @@ export function rateLimitedResponse(
 export function rateLimitMessage(key: LimiterKey, resetMs: number): string {
   const max = LIMITS[key].max;
   const verb =
-    key === "extract"
-      ? "extractions"
-      : key === "discover"
-        ? "discovery runs"
-        : "uploads";
+    key === "extractResume"
+      ? "resume extractions"
+      : key === "extractUrl"
+        ? "URL extractions"
+        : key === "extractGithub"
+          ? "GitHub extractions"
+          : key === "discover"
+            ? "discovery runs"
+            : key === "generate"
+              ? "portfolio generations"
+              : "uploads";
   const resetTime = formatResetTime(resetMs);
   return `You've used your ${max} daily ${verb}. Resets at ${resetTime}.`;
 }

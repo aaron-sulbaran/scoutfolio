@@ -10,8 +10,12 @@ export default async function ConnectPage() {
   if (!session) {
     redirect("/");
   }
+  if (!session.user?.onboardingNarrative) {
+    redirect("/start");
+  }
 
-  const firstName = session.user?.name?.split(" ")[0] ?? "you";
+  const fullName = session.user?.displayName ?? session.user?.name;
+  const firstName = fullName?.split(" ")[0] ?? "you";
 
   return (
     <>

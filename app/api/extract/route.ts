@@ -4,9 +4,11 @@ import { anthropic } from "@ai-sdk/anthropic";
 import { get as getBlob } from "@vercel/blob";
 import { fetchUrl, submitFindings } from "@/lib/extract-tools";
 import {
-  enforceLimit,
+  preflightLimit,
   rateLimitedResponse,
   rateLimitMessage,
+  recordUsage,
+  type LimiterKey,
 } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
@@ -27,18 +29,25 @@ Process:
 
 Tone for tagline and summaries: confident, recruiter-facing, specific. Avoid filler ("passionate about", "team player"). Lead with verbs and outcomes.`;
 
+type FindingsLike = {
+  projects?: unknown[];
+  skills?: unknown[];
+  notableLinks?: unknown[];
+};
+
+function findingsAreUseful(f: unknown): boolean {
+  if (!f || typeof f !== "object") return false;
+  const x = f as FindingsLike;
+  const projects = Array.isArray(x.projects) ? x.projects.length : 0;
+  const skills = Array.isArray(x.skills) ? x.skills.length : 0;
+  const links = Array.isArray(x.notableLinks) ? x.notableLinks.length : 0;
+  return projects + skills + links > 0;
+}
+
 export async function POST(req: Request) {
   const session = await auth();
   if (!session?.user?.email) {
     return new Response("Unauthorized", { status: 401 });
-  }
-
-  const limit = await enforceLimit("extract", session.user.email);
-  if (!limit.ok) {
-    return rateLimitedResponse(
-      limit,
-      rateLimitMessage("extract", limit.resetMs)
-    );
   }
 
   let body: ExtractRequest;
@@ -46,6 +55,17 @@ export async function POST(req: Request) {
     body = await req.json();
   } catch {
     return new Response("Invalid JSON", { status: 400 });
+  }
+
+  const limiterKey: LimiterKey =
+    body.source === "resume" ? "extractResume" : "extractUrl";
+
+  const limit = await preflightLimit(limiterKey, session.user.email);
+  if (!limit.ok) {
+    return rateLimitedResponse(
+      limit,
+      rateLimitMessage(limiterKey, limit.resetMs)
+    );
   }
 
   // Build the user message: text-only for URL, text+PDF for resume.
@@ -64,8 +84,6 @@ export async function POST(req: Request) {
       },
     ];
   } else {
-    // Read the PDF from Vercel Blob using the @vercel/blob SDK so the
-    // BLOB_READ_WRITE_TOKEN is applied automatically (the store is private).
     let pdfBuffer: Uint8Array;
     try {
       const result = await getBlob(body.blobUrl, { access: "private" });
@@ -101,8 +119,6 @@ export async function POST(req: Request) {
     ];
   }
 
-  // Both branches expose the same tool surface; the system prompt + attached PDF
-  // tell the model when to fetchUrl vs read the file directly.
   const tools = { fetchUrl, submitFindings };
 
   const encoder = new TextEncoder();
@@ -177,12 +193,18 @@ export async function POST(req: Request) {
 
         await result.consumeStream();
 
-        if (findings) {
+        if (findings && findingsAreUseful(findings)) {
+          // Only consume a slot for genuine successes. Empty submissions, model
+          // errors, or scanned-PDF dead ends leave the user's quota intact.
+          await recordUsage(limiterKey, session.user!.email!);
           send(controller, { type: "result", data: findings });
         } else {
           send(controller, {
-            type: "status",
-            text: "Agent finished without submitting findings.",
+            type: "extraction_failed",
+            message:
+              body.source === "url"
+                ? "That URL didn't return enough content to use. Try another link, your usage wasn't affected."
+                : "Couldn't pull anything useful from that PDF. Try a different file or a clearer scan, your usage wasn't affected.",
           });
         }
         send(controller, { type: "done" });

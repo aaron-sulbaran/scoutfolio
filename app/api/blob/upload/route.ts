@@ -1,9 +1,10 @@
 import { auth } from "@/auth";
 import { put } from "@vercel/blob";
 import {
-  enforceLimit,
+  preflightLimit,
   rateLimitedResponse,
   rateLimitMessage,
+  recordUsage,
 } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
@@ -18,7 +19,7 @@ export async function POST(request: Request) {
     return new Response("Unauthorized", { status: 401 });
   }
 
-  const limit = await enforceLimit("upload", session.user.email);
+  const limit = await preflightLimit("upload", session.user.email);
   if (!limit.ok) {
     return rateLimitedResponse(
       limit,
@@ -51,6 +52,7 @@ export async function POST(request: Request) {
       addRandomSuffix: true,
       contentType: "application/pdf",
     });
+    await recordUsage("upload", session.user.email);
     return Response.json(
       { url: blob.url, pathname: blob.pathname },
       { headers: limit.headers }

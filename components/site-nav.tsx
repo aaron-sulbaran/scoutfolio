@@ -52,13 +52,21 @@ function MarketingNavRight() {
 
 function AppNavRight() {
   return (
-    <form action={signOutAction}>
-      <button
-        type="submit"
+    <>
+      <Link
+        href="/settings"
         className="rounded-full px-3 py-2 text-sm text-muted transition-colors hover:text-foreground"
       >
-        Sign out
-      </button>
-    </form>
+        Settings
+      </Link>
+      <form action={signOutAction}>
+        <button
+          type="submit"
+          className="rounded-full px-3 py-2 text-sm text-muted transition-colors hover:text-foreground"
+        >
+          Sign out
+        </button>
+      </form>
+    </>
   );
 }

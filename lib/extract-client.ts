@@ -10,6 +10,7 @@ export type ExtractEvent =
   | { type: "status"; text: string }
   | { type: "delta"; text: string }
   | { type: "result"; data: Findings }
+  | { type: "extraction_failed"; message: string }
   | { type: "done" }
   | { type: "error"; message: string };
 
