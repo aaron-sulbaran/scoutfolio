@@ -14,12 +14,17 @@ import {
   rateLimitMessage,
   recordUsage,
 } from "@/lib/rate-limit";
-import { composePortfolio } from "@/lib/portfolio-scaffold/compose";
+import {
+  composePortfolio,
+  type PortfolioContent,
+} from "@/lib/portfolio-scaffold/compose";
 import {
   ContentSchema,
   validateContent,
   type ValidatablePortfolioContent,
 } from "@/lib/portfolio-scaffold/schema";
+import { sanitizeCustomCss } from "@/lib/portfolio-scaffold/css-sanitizer";
+import { describeLayoutVocabulary } from "@/lib/portfolio-scaffold/templates";
 
 export const runtime = "nodejs";
 export const maxDuration = 90;
@@ -98,24 +103,33 @@ export async function POST(req: Request) {
         const result = await generateObject({
           model: anthropic(MODEL),
           schema: ContentSchema,
-          system: `You are ScoutFolio's portfolio EDITING agent. The user has an existing portfolio content object (including a theme) and is asking for a specific change. Apply ONLY that change. Preserve every other field of the content object exactly as it was.
+          system: `You are ScoutFolio's portfolio EDITING agent. The user has an existing portfolio content object (including a theme with composable layout) and is asking for a specific change. Apply ONLY that change. Preserve every other field of the content object exactly as it was.
 
 Strict rules:
-- Output the FULL updated content object (every field, including the theme object). Fields the user did not ask to change must be byte-for-byte identical to the input.
+- Output the FULL updated content object (every field, including the theme object with its layout sub-fields). Fields the user did not ask to change must be byte-for-byte identical to the input.
 - Never invent new projects, links, employers, metrics, or facts the user did not provide.
 - Never use em dashes (use commas, semicolons, or separate sentences).
-- Match the existing editorial-monograph tone.
 - taglineEmphasis phrases must appear verbatim in tagline.
 - If the user asks for something ambiguous, make the smallest reasonable interpretation and apply it.
 
 Theme editing is ALLOWED:
-- "Make it darker" / "dark mode" / "go dark" / "switch to night" → set theme.mode to 'dark', shift colors to a near-black paper (e.g. '#0F0E0C'), cream ink (e.g. '#EDE7D9'), brighter rust (e.g. '#D8704A'), and dark rule + card.
-- "Make it lighter" / "back to light" → mirror the inverse.
-- "Use [color] as the accent" → update theme.colors.rust to a hex matching the requested hue, picking a saturation that holds against the current paper.
-- "Cooler / warmer / more saturated palette" → shift all six color tokens coherently while keeping mode and the accent's role intact.
-- "Use a [font]" → if the user names a font that maps to one of the allowed enums (fraunces, instrument-serif, playfair-display, cormorant-garamond, space-grotesk, dm-sans, inter-tight, manrope, work-sans, geist, ibm-plex-mono, jetbrains-mono, geist-mono, space-mono), pick the closest enum value. If they ask for something not on the list, pick the closest spiritual cousin and proceed.
-- All color values must be 6-digit hex codes ('#RRGGBB').
-- Layout structure (numbered sections, drop caps, hairline grid, section ordering) is FIXED and not yours to change. If the user asks to change layout/structure (e.g. "use a sidebar", "two-column hero", "make sections horizontal"), leave the content object UNCHANGED so the client surfaces a separate notice.`,
+- "Make it darker" / "dark mode" -> set theme.mode to 'dark', shift colors to a near-black paper, cream ink, brighter rust.
+- "Make it lighter" -> mirror the inverse.
+- "Use [color] as the accent" -> update theme.colors.rust to a hex matching the requested hue.
+- "Cooler / warmer / more saturated palette" -> shift all six color tokens coherently while keeping mode and the accent's role intact.
+- "Use a [font]" -> pick the closest enum value from the registered fonts. All color values must be 6-digit hex codes ('#RRGGBB').
+
+Layout switching is ALSO ALLOWED. theme.layout is composable: { hero, work, about, contact }. The user may ask to change one or more sections.
+
+${describeLayoutVocabulary()}
+
+If the user says "switch to a terminal/dev style", set hero "terminal-prompt", work "git-log", about "code-block", contact "code-block" (and probably mode "dark"). If they say "make it minimal", set hero "minimal-stack", work "list-stack", about "single-block", contact "inline-middots". If they say "asymmetric / creative / visual", set hero "asymmetric-display", work "gallery-asymmetric", about "pull-quote", contact "footer-band". If they only mention one section ("make the hero a terminal style"), only change that one slot. If the user does not mention layout, preserve every theme.layout slot byte-for-byte.
+
+Custom CSS escape hatch:
+- The user may ask for stylistic details the structured fields cannot express (texture, letter-spacing, decorative treatments). Update theme.customCss to honor it within the whitelist (max ~1500 chars).
+- Allowed selectors: .scout-* class hooks, :root for CSS variables, a/body/html with limited properties. Allowed at-rules: @media size queries.
+- Do NOT use @import, @font-face, * selectors, attribute selectors, or url() pointing anywhere except data: URIs.
+- If the user does NOT mention adding/changing custom CSS, preserve theme.customCss byte-for-byte.`,
           prompt: `Current portfolio content (JSON):
 ${JSON.stringify(currentContent, null, 2)}
 ${historyContext}
@@ -125,6 +139,20 @@ Return the FULL updated content object with the user's requested change applied.
         });
 
         const updated = result.object as ValidatablePortfolioContent;
+
+        // Sanitize the customCss if the agent emitted any. Same string is
+        // injected into the preview iframe AND the exported globals.css, so
+        // sanitization keeps both safe in lockstep.
+        if (updated.theme.customCss) {
+          const { css, dropped } = sanitizeCustomCss(updated.theme.customCss);
+          updated.theme.customCss = css || undefined;
+          if (dropped.length > 0) {
+            console.log(
+              "[edit-portfolio] sanitized customCss, dropped:",
+              dropped
+            );
+          }
+        }
 
         send(controller, {
           type: "status",
@@ -159,7 +187,7 @@ Return the FULL updated content object with the user's requested change applied.
         const composed = composePortfolio({
           projectName: meta.slug,
           title: meta.title,
-          content: updated,
+          content: updated as PortfolioContent,
         });
 
         await recordUsage("edit", session.user!.email!);
@@ -232,9 +260,21 @@ function describeChange(
   if (JSON.stringify(before.contact) !== JSON.stringify(after.contact))
     changes.push("contact");
   if (JSON.stringify(before.theme) !== JSON.stringify(after.theme)) {
+    const layoutChanges: string[] = [];
+    if (before.theme.layout.hero !== after.theme.layout.hero)
+      layoutChanges.push(`hero -> ${after.theme.layout.hero}`);
+    if (before.theme.layout.work !== after.theme.layout.work)
+      layoutChanges.push(`work -> ${after.theme.layout.work}`);
+    if (before.theme.layout.about !== after.theme.layout.about)
+      layoutChanges.push(`about -> ${after.theme.layout.about}`);
+    if (before.theme.layout.contact !== after.theme.layout.contact)
+      layoutChanges.push(`contact -> ${after.theme.layout.contact}`);
+    if (layoutChanges.length > 0) {
+      changes.push(`layout (${layoutChanges.join(", ")})`);
+    }
     if (before.theme.mode !== after.theme.mode) {
       changes.push(`theme (${after.theme.mode} mode)`);
-    } else {
+    } else if (layoutChanges.length === 0) {
       changes.push("theme");
     }
   }

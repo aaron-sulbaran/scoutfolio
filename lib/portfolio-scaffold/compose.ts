@@ -1,10 +1,7 @@
 import { buildScaffold, type ScaffoldFile } from "./files";
-import {
-  buildComponentFiles,
-  buildDataModule,
-  buildPreviewHtml,
-  type PortfolioContent,
-} from "./templates";
+import { buildDataModule, type PortfolioContent } from "./templates/_common";
+import { buildComponentFiles } from "./templates/compose-tsx";
+import { buildPreviewHtml } from "./templates/compose-preview";
 
 export type ComposedPortfolio = {
   files: ScaffoldFile[];
@@ -21,7 +18,7 @@ export function composePortfolio(opts: {
     title: opts.title,
     theme: opts.content.theme,
   });
-  const components = buildComponentFiles();
+  const components = buildComponentFiles(opts.content);
   const dataFile: ScaffoldFile = {
     path: "app/data.ts",
     content: buildDataModule(opts.content),
@@ -34,4 +31,4 @@ export function composePortfolio(opts: {
   };
 }
 
-export type { PortfolioContent } from "./templates";
+export type { PortfolioContent } from "./templates/_common";

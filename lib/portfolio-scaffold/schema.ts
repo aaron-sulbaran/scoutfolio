@@ -1,8 +1,51 @@
 import { z } from "zod";
-import { isValidHex } from "./themes";
+import {
+  ABOUT_VARIANT_IDS,
+  BODY_FONT_IDS,
+  CONTACT_VARIANT_IDS,
+  DISPLAY_FONT_IDS,
+  HERO_VARIANT_IDS,
+  MONO_FONT_IDS,
+  WORK_VARIANT_IDS,
+  isValidHex,
+} from "./themes";
 
 // Anthropic structured-output cannot use minItems > 1, maxItems, minimum, or
 // maximum. Constraints are expressed in .describe() text instead.
+
+// ---------------------------------------------------------------------------
+// Layout sub-enums (one per section). The agent picks each independently
+// based on the user's brief, so two different briefs produce structurally
+// different portfolios rather than recolored versions of the same skeleton.
+// ---------------------------------------------------------------------------
+
+export const HeroVariantEnum = z.enum(HERO_VARIANT_IDS);
+export const WorkVariantEnum = z.enum(WORK_VARIANT_IDS);
+export const AboutVariantEnum = z.enum(ABOUT_VARIANT_IDS);
+export const ContactVariantEnum = z.enum(CONTACT_VARIANT_IDS);
+
+export const LayoutSchema = z
+  .object({
+    hero: HeroVariantEnum.describe(
+      "Hero treatment. 'centered-editorial' = numbered eyebrow + large display name + drop-cap intro (Studio Monograph). 'asymmetric-display' = oversized display type with vertical accent stroke. 'terminal-prompt' = mono prompt header with bracketed name and blinking cursor (best for developer briefs). 'minimal-stack' = three-line stack: name, role, one-sentence pitch."
+    ),
+    work: WorkVariantEnum.describe(
+      "Work section treatment. 'ledger-grid' = numbered grid with stack pills (Studio Monograph). 'card-grid' = 2-column card grid. 'list-stack' = single column, bold title + summary + chips. 'git-log' = commit-style rows with hash IDs and dates (best for developer briefs). 'gallery-asymmetric' = featured-first 12-col asymmetric grid (best for visual portfolios)."
+    ),
+    about: AboutVariantEnum.describe(
+      "About section treatment. 'drop-cap' = first paragraph drop-cap with sidebar (Studio Monograph). 'pull-quote' = one sentence pulled large with body below. 'code-block' = rendered as a syntax-themed code block (best for developer briefs). 'single-block' = plain quiet paragraph, no decoration."
+    ),
+    contact: ContactVariantEnum.describe(
+      "Contact section treatment. 'card-bordered' = bordered card with link list (Studio Monograph). 'inline-middots' = plain inline links separated by middots. 'code-block' = code-themed contact block. 'footer-band' = wide horizontal band at the foot of the page."
+    ),
+  })
+  .describe(
+    "Composable layout. Each section is picked independently. The agent should pick variants whose conventions match the user's brief: technical/terminal briefs prefer terminal-prompt + git-log + code-block; minimal briefs prefer minimal-stack + list-stack + single-block + inline-middots; creative/visual briefs prefer asymmetric-display + gallery-asymmetric + pull-quote + footer-band."
+  );
+
+// ---------------------------------------------------------------------------
+// Theme: colors + fonts + layout + optional customCss escape hatch.
+// ---------------------------------------------------------------------------
 
 export const ThemeSchema = z.object({
   mode: z
@@ -29,7 +72,7 @@ export const ThemeSchema = z.object({
     rust: z
       .string()
       .describe(
-        "Accent color used for section numerals, links, the rust rule, the underline. 6-digit hex. Should be a confident hue with enough contrast against paper."
+        "Accent color used for section numerals, links, the rust rule, the underline. 6-digit hex. Should be a confident hue with enough contrast against paper. Pick the hue from the user's brief if they suggest one (e.g. 'forest green' -> deep green hex)."
       ),
     rule: z
       .string()
@@ -44,32 +87,28 @@ export const ThemeSchema = z.object({
   }),
   fonts: z.object({
     display: z
-      .enum([
-        "fraunces",
-        "instrument-serif",
-        "playfair-display",
-        "cormorant-garamond",
-        "space-grotesk",
-      ])
+      .enum(DISPLAY_FONT_IDS)
       .describe(
-        "Display typeface for the hero name and section headlines. Pick a serif for editorial feel, 'space-grotesk' for sharper modernist."
+        "Display typeface for the hero name and section headlines. Pick the font that best matches the brief. Editorial/literary briefs -> serif (fraunces, instrument-serif, playfair-display, cormorant-garamond, eb-garamond, lora). Modern/technical -> geometric sans (space-grotesk, bricolage-grotesque, hanken-grotesk, familjen-grotesk). Brutalist/heavy/poster -> archivo-black, fjalla-one, bebas-neue, anton, big-shoulders-display. Retro/expressive -> abril-fatface, yeseva-one. Handwritten/casual -> caveat, permanent-marker, pacifico."
       ),
     body: z
-      .enum(["dm-sans", "inter-tight", "manrope", "work-sans", "geist"])
+      .enum(BODY_FONT_IDS)
       .describe(
-        "Body typeface for prose. All five are clean modern sans-serifs."
+        "Body typeface for prose. Sans options (dm-sans, inter-tight, manrope, work-sans, geist, public-sans, sora) are appropriate for most briefs. Long-form serif options (source-serif-4, crimson-pro, lora) suit literary/editorial briefs."
       ),
     mono: z
-      .enum([
-        "ibm-plex-mono",
-        "jetbrains-mono",
-        "geist-mono",
-        "space-mono",
-      ])
+      .enum(MONO_FONT_IDS)
       .describe(
-        "Monospace typeface for eyebrow labels, project numerals, and stack pills."
+        "Monospace typeface for eyebrow labels, project numerals, and stack pills. ibm-plex-mono is the editorial default. jetbrains-mono and fira-code suit developer briefs. geist-mono is modern. space-mono and dm-mono are geometric/soft variations."
       ),
   }),
+  layout: LayoutSchema,
+  customCss: z
+    .string()
+    .optional()
+    .describe(
+      "Optional CSS overrides. Use this for stylistic details the structured fields cannot express (texture, decorative treatments, letter-spacing, font-feature-settings). Limit ~1500 characters. Target only these stable class hooks: .scout-page, .scout-hero, .scout-hero-name, .scout-hero-tagline, .scout-hero-intro, .scout-section, .scout-section-header, .scout-section-eyebrow, .scout-section-numeral, .scout-section-title, .scout-work-list, .scout-work-item, .scout-work-title, .scout-work-meta, .scout-work-summary, .scout-work-stack, .scout-about, .scout-about-prose, .scout-about-sidebar, .scout-contact, .scout-contact-line, .scout-contact-list, .scout-rule, .scout-accent. You may also target :root (CSS variables only), and a/body/html (limited properties). @media size queries are allowed. Do NOT use @import, @font-face, * selectors, attribute selectors, or url() pointing anywhere except data: URIs. Anything outside this whitelist is dropped server-side."
+    ),
 });
 
 export const ContentSchema = z.object({
@@ -211,7 +250,7 @@ export const ContentSchema = z.object({
       .describe("Pass through from input contact.website if provided."),
   }),
   theme: ThemeSchema.describe(
-    "Color palette and typography for the portfolio. The agent may set or change this. Layout structure (numbered sections, drop caps, grid) is fixed and not part of the theme."
+    "Color palette, typography, layout composition, and optional custom CSS. The agent picks every field based on the user's brief; freedom is intentional."
   ),
 });
 
@@ -229,6 +268,60 @@ export const ContentWithMetaSchema = ContentSchema.extend({
       ),
   }),
 });
+
+// ---------------------------------------------------------------------------
+// Style preferences: optional input to /api/generate-portfolio collected on
+// the /configure page. Every field is optional. Empty preferences (=
+// "Just decide for me") falls back to the editorial defaults.
+// ---------------------------------------------------------------------------
+
+export const StylePreferencesSchema = z
+  .object({
+    brief: z
+      .string()
+      .trim()
+      .max(500)
+      .optional()
+      .describe(
+        "Free-text user description of the portfolio they want. Treat as the strongest signal."
+      ),
+    presetId: z
+      .string()
+      .min(1)
+      .max(40)
+      .optional()
+      .describe(
+        "Optional theme preset ID to seed the baseline (editorial / developer / minimal / creative)."
+      ),
+    paletteId: z
+      .string()
+      .min(1)
+      .max(40)
+      .optional()
+      .describe(
+        "Optional color palette ID. Suggestion only; the brief may override."
+      ),
+    mode: z
+      .enum(["light", "dark"])
+      .optional()
+      .describe(
+        "Optional explicit mode. If omitted, the preset's default mode is used."
+      ),
+    layoutOverrides: z
+      .object({
+        hero: HeroVariantEnum.optional(),
+        work: WorkVariantEnum.optional(),
+        about: AboutVariantEnum.optional(),
+        contact: ContactVariantEnum.optional(),
+      })
+      .optional()
+      .describe(
+        "User-pinned layout slots. Any pinned slot must be honored exactly by the agent."
+      ),
+  })
+  .strict();
+
+export type StylePreferences = z.infer<typeof StylePreferencesSchema>;
 
 export type ValidatablePortfolioContent = z.infer<typeof ContentSchema>;
 
@@ -280,6 +373,12 @@ export function validateContent(
     if (!isValidHex(val)) {
       return `theme.colors.${name} must be a 6-digit hex like '#F2EEE5' (got '${val}')`;
     }
+  }
+  if (
+    content.theme.customCss !== undefined &&
+    content.theme.customCss.length > 1500
+  ) {
+    return `theme.customCss exceeds 1500 character limit (${content.theme.customCss.length})`;
   }
   return null;
 }

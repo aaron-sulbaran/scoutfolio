@@ -167,11 +167,11 @@ export function InventoryPanel({
             {generating ? (
               <>
                 <Loader2 className="size-3.5 animate-spin" />
-                Generating your portfolio&hellip;
+                Taking you to the design step&hellip;
               </>
             ) : (
               <>
-                Generate portfolio
+                Pick a style
                 <ArrowRight className="size-3.5" />
               </>
             )}
@@ -179,7 +179,7 @@ export function InventoryPanel({
           <p className="text-xs text-muted">
             {featureOrIncludeCount} item
             {featureOrIncludeCount === 1 ? "" : "s"} will go on the site.
-            Skipped items are excluded.
+            Skipped items are excluded. Next: describe the vibe.
           </p>
           {generateRemaining && (
             <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted/70">

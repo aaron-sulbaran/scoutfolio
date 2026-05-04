@@ -22,8 +22,12 @@ import {
 } from "@/lib/portfolio-scaffold/compose";
 import {
   ContentWithMetaSchema,
+  StylePreferencesSchema,
   validateContent,
 } from "@/lib/portfolio-scaffold/schema";
+import { sanitizeCustomCss } from "@/lib/portfolio-scaffold/css-sanitizer";
+import { resolveBaselineTheme } from "@/lib/portfolio-scaffold/presets";
+import { describeLayoutVocabulary } from "@/lib/portfolio-scaffold/templates";
 
 export const runtime = "nodejs";
 export const maxDuration = 90;
@@ -57,6 +61,7 @@ const RequestSchema = z.object({
       })
       .optional(),
   }),
+  stylePreferences: StylePreferencesSchema.optional(),
 });
 
 export async function POST(req: Request) {
@@ -91,6 +96,9 @@ export async function POST(req: Request) {
     "Anonymous Builder";
   const targetRole = parsed.user.targetRole ?? "the role they are targeting";
   const contact = parsed.user.contact ?? {};
+  const prefs = parsed.stylePreferences ?? {};
+  const baselineTheme = resolveBaselineTheme(prefs);
+  const overrides = prefs.layoutOverrides ?? {};
 
   const featured = parsed.inventory.items.filter(
     (i) => i.suggestedAction !== "skip"
@@ -102,6 +110,23 @@ export async function POST(req: Request) {
         `${idx + 1}. [${i.suggestedAction.toUpperCase()}] ${i.title}\n   ${i.description}\n   Source: ${i.source}. Strength: ${i.strengthScore}/10.`
     )
     .join("\n\n");
+
+  const briefSection = prefs.brief
+    ? `\nUSER STYLE BRIEF (treat as the strongest signal, above narrative and role):\n"${prefs.brief}"\n`
+    : "\nNo explicit style brief provided. Pick a layout, palette, fonts, and customCss that match the candidate's narrative and target role.\n";
+
+  const overrideSection = (() => {
+    const lines: string[] = [];
+    if (overrides.hero) lines.push(`hero: "${overrides.hero}"`);
+    if (overrides.work) lines.push(`work: "${overrides.work}"`);
+    if (overrides.about) lines.push(`about: "${overrides.about}"`);
+    if (overrides.contact) lines.push(`contact: "${overrides.contact}"`);
+    if (lines.length === 0) return "";
+    return `\nLAYOUT OVERRIDES (the user pinned these slots; you MUST use them exactly):\n${lines.join("\n")}\n`;
+  })();
+
+  const baselineHint = JSON.stringify(baselineTheme, null, 2);
+  const vocabulary = describeLayoutVocabulary();
 
   const encoder = new TextEncoder();
   const send = (
@@ -116,39 +141,62 @@ export async function POST(req: Request) {
       try {
         send(controller, {
           type: "status",
-          text: "Reading your reviewed inventory.",
+          text: "Reading your reviewed inventory and style brief.",
         });
         send(controller, {
           type: "status",
-          text: "Composing your hero, work ledger, about, and contact.",
+          text: "Picking the layout, palette, and tone for your portfolio.",
         });
 
         const result = await generateObject({
           model: anthropic(MODEL),
           schema: ContentWithMetaSchema,
-          system: `You are ScoutFolio's portfolio generation agent. You write the CONTENT and choose the THEME for a personal portfolio. You do NOT write code, HTML, CSS, or markup.
+          system: `You are ScoutFolio's portfolio generation agent. You write the CONTENT and choose the THEME (composable layout + colors + fonts + optional customCss) for a personal portfolio. You do NOT write TSX, HTML, or markup.
+
+Priority order for design decisions: (1) the user's style brief, if present, (2) the candidate's narrative, (3) the target role, (4) the inventory.
+
+Component vocabulary (pick one variant per slot):
+
+${vocabulary}
+
+A few opinionated pairings the brief should nudge you toward:
+- Developer / hacker / terminal brief -> hero "terminal-prompt", work "git-log", about "code-block", contact "code-block", mode "dark", mono-leaning fonts (jetbrains-mono / fira-code).
+- Minimal / quiet / no-decoration brief -> hero "minimal-stack", work "list-stack", about "single-block", contact "inline-middots".
+- Editorial / literary / monograph brief -> hero "centered-editorial", work "ledger-grid", about "drop-cap", contact "card-bordered" (the default Studio Monograph).
+- Visual / creative / asymmetric brief -> hero "asymmetric-display", work "gallery-asymmetric", about "pull-quote", contact "footer-band".
+You may MIX and MATCH variants if the brief calls for it (e.g. terminal hero + ledger work).
+
+Custom CSS escape hatch:
+- You may emit theme.customCss (max ~1500 chars) to honor stylistic asks the structured fields cannot express (texture, letter-spacing, font-feature-settings, decorative treatments, hover states).
+- Target only these stable class hooks: .scout-page, .scout-hero, .scout-hero-name, .scout-hero-tagline, .scout-hero-intro, .scout-section, .scout-section-header, .scout-section-eyebrow, .scout-section-numeral, .scout-section-title, .scout-work-list, .scout-work-item, .scout-work-title, .scout-work-meta, .scout-work-summary, .scout-work-stack, .scout-about, .scout-about-prose, .scout-about-sidebar, .scout-contact, .scout-contact-line, .scout-contact-list, .scout-rule, .scout-emphasis. You may also target :root (CSS variables only), and a/body/html (limited properties). @media size queries are allowed.
+- Do NOT use @import, @font-face, * selectors, attribute selectors, or url() pointing anywhere except data: URIs.
+- Anything outside the whitelist is dropped server-side, so be conservative and intentional.
 
 Content rules:
 - Write name, taglines, project copy, about prose, and a closing line.
 - Never use em dashes (use commas, semicolons, or separate sentences).
 - Never invent URLs or facts the candidate did not provide.
 - Lead with verbs and outcomes. Avoid filler ("passionate about", "team player", "results-driven").
-- Match the editorial-monograph tone: confident, specific, slightly literary, but plainspoken.
+- Match the tone implied by the brief and chosen layout: editorial = confident and slightly literary, developer = terse and technical, minimal = quiet and direct, creative = expressive and image-forward.
 - Italic emphasis (taglineEmphasis) should land on noun phrases that earn the weight, not adjectives.
 
 Theme rules:
-- Default theme is light mode with warm bone paper '#F2EEE5', warm ink '#14110E', stone '#6E665C', rust '#B5462C', rule '#DCD5C7', card '#EDE7D9'; fonts fraunces / dm-sans / ibm-plex-mono. Use this default unless the candidate's narrative or target role strongly suggests another mood (e.g. a dev-tools engineer might prefer 'space-grotesk' display, a designer might prefer 'cormorant-garamond').
 - All color values must be 6-digit hex codes ('#RRGGBB').
-- In dark mode, paper should be near-black (e.g. '#0F0E0C'), ink should be cream (e.g. '#EDE7D9'), and rust should brighten (e.g. '#D8704A') so accents stay legible.
-- Layout structure (numbered sections, drop caps, hairline grid) is FIXED and not yours to change.`,
-          prompt: `Compose the portfolio content for this candidate.
+- The baseline below is YOUR starting point. Adjust any field the user's brief contradicts (e.g. brief says "forest green accent" -> shift theme.colors.rust to a deep green hex).
+- In dark mode, paper should be near-black, ink should be cream or near-white, and rust should brighten so accents stay legible.
+- Fonts must be picked from the registered enum lists; pick the ones that best serve the brief.
+
+Baseline theme to start from:
+${baselineHint}
+${overrideSection}`,
+          prompt: `Compose the portfolio content and theme for this candidate.
 
 Name: ${candidateName}
 Target role: ${targetRole}
 Headline (from discovery): ${parsed.inventory.headline}
 Narrative (free text the candidate wrote about themselves):
 ${narrative || "(none provided)"}
-
+${briefSection}
 Contact links (pass these through verbatim into contact fields when present):
 ${
   Object.entries(contact)
@@ -161,11 +209,30 @@ Reviewed inventory (FEATURE = top of work ledger, INCLUDE = secondary slot, item
 
 ${inventoryContext}
 
-Output the structured content object. Featured projects come first in the projects array. Use the candidate's exact name. Do not invent links, metrics, or employers.`,
+Output the structured content object including a complete theme (mode, colors, fonts, layout, optional customCss). Featured projects come first in the projects array. Use the candidate's exact name. Do not invent links, metrics, or employers.`,
         });
 
         const { meta, ...rest } = result.object;
-        const content: PortfolioContent = rest;
+        const content: PortfolioContent = rest as PortfolioContent;
+
+        // Apply overrides: even if the agent didn't honor a pinned slot, force
+        // it back to the user's choice.
+        if (overrides.hero) content.theme.layout.hero = overrides.hero;
+        if (overrides.work) content.theme.layout.work = overrides.work;
+        if (overrides.about) content.theme.layout.about = overrides.about;
+        if (overrides.contact) content.theme.layout.contact = overrides.contact;
+
+        // Sanitize the customCss if present.
+        if (content.theme.customCss) {
+          const { css, dropped } = sanitizeCustomCss(content.theme.customCss);
+          content.theme.customCss = css || undefined;
+          if (dropped.length > 0) {
+            console.log(
+              "[generate-portfolio] sanitized customCss, dropped:",
+              dropped
+            );
+          }
+        }
 
         send(controller, {
           type: "status",

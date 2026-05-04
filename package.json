@@ -19,6 +19,7 @@
     "@vercel/blob": "^2.3.3",
     "@vercel/speed-insights": "^2.0.0",
     "ai": "^6.0.168",
+    "css-tree": "^3.2.1",
     "jszip": "^3.10.1",
     "lucide-react": "^0.545.0",
     "next": "16.2.4",
@@ -31,6 +32,7 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
+    "@types/css-tree": "^2.3.11",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",

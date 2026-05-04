@@ -128,6 +128,7 @@ function buildGlobalsCss(theme: Theme): string {
   const mono = MONO_FONTS[theme.fonts.mono];
   const dotColor = dotColorFor(theme.mode);
   const selectionFg = selectionFgFor(theme);
+  const customCss = theme.customCss ? `\n${theme.customCss}\n` : "";
 
   return `@import "tailwindcss";
 
@@ -166,7 +167,8 @@ function buildGlobalsCss(theme: Theme): string {
 }
 
 @layer utilities {
-  .eyebrow {
+  .eyebrow,
+  .scout-section-eyebrow {
     font-family: var(--font-mono);
     font-size: 10px;
     letter-spacing: 0.22em;
@@ -174,12 +176,18 @@ function buildGlobalsCss(theme: Theme): string {
     color: var(--color-stone);
   }
 
-  .section-numeral {
+  .section-numeral,
+  .scout-section-numeral {
     font-family: var(--font-display);
     font-style: italic;
     color: var(--color-rust);
     font-weight: 300;
     line-height: 1;
+  }
+
+  .scout-emphasis {
+    font-style: italic;
+    color: var(--color-ink);
   }
 
   .drop-cap::first-letter {
@@ -194,7 +202,8 @@ function buildGlobalsCss(theme: Theme): string {
     font-weight: 400;
   }
 
-  .hairline {
+  .hairline,
+  .scout-rule {
     height: 1px;
     background: var(--color-rule);
     width: 100%;
@@ -205,8 +214,40 @@ function buildGlobalsCss(theme: Theme): string {
     background: var(--color-rust);
     width: 3rem;
   }
+
+  .scout-pre {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.7;
+    background: color-mix(in srgb, var(--color-ink) 6%, var(--color-paper));
+    color: var(--color-ink);
+    padding: 24px 28px;
+    border-radius: 4px;
+    border: 1px solid var(--color-rule);
+    white-space: pre-wrap;
+    word-break: break-word;
+    overflow-wrap: break-word;
+  }
+  .scout-pre .scout-comment { color: var(--color-stone); font-style: italic; }
+  .scout-pre .scout-keyword { color: var(--color-rust); }
+  .scout-pre .scout-string { color: color-mix(in srgb, var(--color-rust) 80%, var(--color-ink)); }
+
+  .scout-cursor {
+    display: inline-block;
+    width: 0.5ch;
+    height: 0.7em;
+    background: var(--color-rust);
+    transform: translateY(-0.1em);
+    margin-left: 4px;
+    animation: scout-blink 1s steps(2) infinite;
+    vertical-align: middle;
+  }
+  @keyframes scout-blink {
+    0%, 50% { opacity: 1; }
+    50.01%, 100% { opacity: 0; }
+  }
 }
-`;
+${customCss}`;
 }
 
 function buildReadme(theme: Theme): string {

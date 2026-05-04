@@ -28,7 +28,7 @@ import { connectGitHub, disconnectGitHub } from "@/app/actions";
 import type { Workspace, UrlArtifact } from "@/lib/workspace";
 import { canonicalizeUrl } from "@/lib/canonical";
 
-const GENERATED_STORAGE_KEY = "scoutfolio.generated.v2";
+const PENDING_GENERATION_KEY = "scoutfolio.pending-generation.v1";
 
 type Status =
   | "idle"
@@ -657,7 +657,7 @@ export function ConnectorGrid({
     if (!inventory) return;
     setGenerating(true);
     setGenerationError(undefined);
-    setGenerationStatuses(["Spinning up the portfolio agent..."]);
+    setGenerationStatuses([]);
 
     const contact: { website?: string; github?: string; linkedin?: string } =
       {};
@@ -683,89 +683,22 @@ export function ConnectorGrid({
       urls.find((u) => u.result?.title)?.result?.title ||
       undefined;
 
+    const payload = {
+      inventory: { ...inventory, items },
+      user: { name: candidateName, contact },
+    };
+
     try {
-      const res = await fetch("/api/generate-portfolio", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          inventory: { ...inventory, items },
-          user: { name: candidateName, contact },
-        }),
-      });
-      if (!res.ok) {
-        const limited = await parseRateLimit(res);
-        if (limited) {
-          setGenerationError(limited.message);
-          return;
-        }
-        const text = await res.text();
-        setGenerationError(`${res.status}: ${text}`);
-        return;
-      }
-
-      let complete:
-        | {
-            files: { path: string; content: string }[];
-            previewHtml: string;
-            content: unknown;
-            summary?: string;
-            meta: { name: string; title: string };
-          }
-        | null = null;
-
-      if (!res.body) {
-        setGenerationError("No response body from agent.");
-        return;
-      }
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed) continue;
-          let evt: { type: string; [k: string]: unknown };
-          try {
-            evt = JSON.parse(trimmed);
-          } catch {
-            continue;
-          }
-          if (evt.type === "status") {
-            const text = String(evt.text);
-            setGenerationStatuses((prev) => [...prev, text]);
-          } else if (evt.type === "file_complete") {
-            const path = String(evt.path);
-            setGenerationStatuses((prev) => [...prev, `Wrote ${path}`]);
-          } else if (evt.type === "complete") {
-            complete = evt.data as typeof complete;
-          } else if (evt.type === "error") {
-            setGenerationError(String(evt.message));
-          }
-        }
-      }
-
-      if (complete) {
-        try {
-          sessionStorage.setItem(
-            GENERATED_STORAGE_KEY,
-            JSON.stringify(complete)
-          );
-        } catch (err) {
-          console.warn("[connector-grid] sessionStorage failed:", err);
-        }
-        void refreshLimits();
-        router.push("/preview");
-      }
+      sessionStorage.setItem(PENDING_GENERATION_KEY, JSON.stringify(payload));
     } catch (err) {
-      setGenerationError(err instanceof Error ? err.message : String(err));
-    } finally {
+      console.warn("[connector-grid] sessionStorage failed:", err);
+      setGenerationError(
+        "Could not stage your inventory for the configure step. Try again or refresh the page."
+      );
       setGenerating(false);
+      return;
     }
+    router.push("/configure");
   }
 
   // The "primary" URL slot rendered inside the URL card when count <= 1.
