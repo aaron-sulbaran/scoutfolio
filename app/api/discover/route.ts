@@ -2,7 +2,7 @@ import { auth } from "@/auth";
 import { generateObject } from "ai";
 import { anthropic } from "@ai-sdk/anthropic";
 import { z } from "zod";
-import type { Findings } from "@/lib/extract-client";
+import { FindingsSchema } from "@/lib/extract-client";
 import {
   preflightLimit,
   rateLimitedResponse,
@@ -13,10 +13,19 @@ import {
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
-type DiscoverRequest = {
-  sources: { source: string; data: Findings }[];
-  targetRole?: string;
-};
+const DiscoverRequestSchema = z.object({
+  sources: z
+    .array(
+      z.object({
+        source: z.string().min(1).max(200),
+        data: FindingsSchema,
+      })
+    )
+    .min(1),
+  targetRole: z.string().max(200).optional(),
+});
+
+type DiscoverRequest = z.infer<typeof DiscoverRequestSchema>;
 
 const InventoryItemSchema = z.object({
   title: z.string().describe("Project or accomplishment title"),
@@ -71,16 +80,21 @@ export async function POST(req: Request) {
 
   let body: DiscoverRequest;
   try {
-    body = await req.json();
+    const raw = await req.json();
+    const parsed = DiscoverRequestSchema.safeParse(raw);
+    if (!parsed.success) {
+      return new Response(
+        JSON.stringify({
+          error: "invalid_request",
+          message:
+            parsed.error.issues[0]?.message ?? "Invalid request payload.",
+        }),
+        { status: 400, headers: { "content-type": "application/json" } }
+      );
+    }
+    body = parsed.data;
   } catch {
     return new Response("Invalid JSON", { status: 400 });
-  }
-
-  if (!body.sources || body.sources.length === 0) {
-    return new Response(
-      JSON.stringify({ error: "Connect at least one source first." }),
-      { status: 400, headers: { "content-type": "application/json" } }
-    );
   }
 
   const sourceContext = body.sources

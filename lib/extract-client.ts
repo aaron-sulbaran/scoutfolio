@@ -1,10 +1,24 @@
-export type Findings = {
-  title: string;
-  tagline: string;
-  projects: { name: string; summary: string; link?: string }[];
-  skills: string[];
-  notableLinks: { label: string; url: string }[];
-};
+import { z } from "zod";
+
+export const FindingsSchema = z.object({
+  title: z.string(),
+  tagline: z.string(),
+  projects: z
+    .array(
+      z.object({
+        name: z.string(),
+        summary: z.string(),
+        link: z.string().optional(),
+      })
+    )
+    .default([]),
+  skills: z.array(z.string()).default([]),
+  notableLinks: z
+    .array(z.object({ label: z.string(), url: z.string() }))
+    .default([]),
+});
+
+export type Findings = z.infer<typeof FindingsSchema>;
 
 export type ExtractEvent =
   | { type: "status"; text: string }

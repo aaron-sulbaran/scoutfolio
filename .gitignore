@@ -65,6 +65,9 @@ id_ecdsa
 # Root agent instruction files used live by Cursor / Claude Code (often cite internals)
 /AGENTS.md
 /CLAUDE.md
+AGENTS_ARCHIVE.md
+CLAUDE.local.md
+CLAUDE_ARCHIVE.md
 
 # Secret backups and env dumps that belong alongside .env*
 .env*.bak

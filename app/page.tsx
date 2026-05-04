@@ -147,7 +147,7 @@ function HowItWorks() {
   const steps = [
     { num: "01", title: "Connect", desc: "Link your sources" },
     { num: "02", title: "Discover", desc: "Agent reads everything" },
-    { num: "03", title: "Ship", desc: "Get a site you&apos;d share" },
+    { num: "03", title: "Ship", desc: "Get a site you'd share" },
   ];
 
   return (
@@ -164,10 +164,7 @@ function HowItWorks() {
                   <p className="font-serif text-lg text-foreground md:text-xl">
                     {step.title}
                   </p>
-                  <p
-                    className="mt-0.5 text-xs text-muted"
-                    dangerouslySetInnerHTML={{ __html: step.desc }}
-                  />
+                  <p className="mt-0.5 text-xs text-muted">{step.desc}</p>
                 </div>
                 {i < steps.length - 1 && (
                   <span className="ml-6 hidden h-px w-8 bg-border lg:block" />

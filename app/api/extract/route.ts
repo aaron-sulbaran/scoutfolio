@@ -2,6 +2,7 @@ import { auth } from "@/auth";
 import { streamText, stepCountIs, type ModelMessage } from "ai";
 import { anthropic } from "@ai-sdk/anthropic";
 import { get as getBlob } from "@vercel/blob";
+import { z } from "zod";
 import { fetchUrl, submitFindings } from "@/lib/extract-tools";
 import { openGitHubMCP, listAuthenticatedUserRepos } from "@/lib/github-mcp";
 import {
@@ -22,10 +23,68 @@ import type { Findings } from "@/lib/extract-client";
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
-type ExtractRequest =
-  | { source: "url"; url: string }
-  | { source: "resume"; blobUrl: string; filename?: string }
-  | { source: "github" };
+const PRIVATE_HOST_PATTERNS = [
+  /^localhost$/i,
+  /^127\./,
+  /^10\./,
+  /^192\.168\./,
+  /^172\.(1[6-9]|2\d|3[01])\./,
+  /^169\.254\./,
+  /^::1$/,
+  /^fc[0-9a-f]{2}:/i,
+  /^fe[89ab][0-9a-f]:/i,
+];
+
+const safeHttpsUrl = z
+  .string()
+  .url()
+  .refine(
+    (raw) => {
+      try {
+        const u = new URL(raw);
+        if (u.protocol !== "https:" && u.protocol !== "http:") return false;
+        const host = u.hostname;
+        if (!host) return false;
+        for (const p of PRIVATE_HOST_PATTERNS) if (p.test(host)) return false;
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    { message: "URL must be public http(s) and not point at a private host" }
+  );
+
+const blobUrlSchema = z
+  .string()
+  .url()
+  .refine(
+    (raw) => {
+      try {
+        const u = new URL(raw);
+        return (
+          u.protocol === "https:" &&
+          /\.public\.blob\.vercel-storage\.com$|\.blob\.vercel-storage\.com$/i.test(
+            u.hostname
+          )
+        );
+      } catch {
+        return false;
+      }
+    },
+    { message: "blobUrl must be a vercel-storage.com host" }
+  );
+
+const ExtractRequestSchema = z.discriminatedUnion("source", [
+  z.object({ source: z.literal("url"), url: safeHttpsUrl }),
+  z.object({
+    source: z.literal("resume"),
+    blobUrl: blobUrlSchema,
+    filename: z.string().max(200).optional(),
+  }),
+  z.object({ source: z.literal("github") }),
+]);
+
+type ExtractRequest = z.infer<typeof ExtractRequestSchema>;
 
 const SYSTEM = `You are ScoutFolio's discovery agent. Your job is to read a source (a personal URL, a resume PDF, or the user's GitHub) and extract portfolio-relevant content for a student building a recruiter-ready personal site.
 
@@ -66,7 +125,15 @@ export async function POST(req: Request) {
 
   let body: ExtractRequest;
   try {
-    body = await req.json();
+    const raw = await req.json();
+    const parsed = ExtractRequestSchema.safeParse(raw);
+    if (!parsed.success) {
+      return new Response(
+        `Invalid request: ${parsed.error.issues[0]?.message ?? "validation failed"}`,
+        { status: 400 }
+      );
+    }
+    body = parsed.data;
   } catch {
     return new Response("Invalid JSON", { status: 400 });
   }
