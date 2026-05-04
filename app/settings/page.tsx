@@ -1,4 +1,6 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
+import { ArrowLeft } from "lucide-react";
 import { auth } from "@/auth";
 import { Grain } from "@/components/grain";
 import { SiteNav } from "@/components/site-nav";
@@ -49,7 +51,15 @@ export default async function SettingsPage({
 
         <main className="flex-1 px-6 pb-24 pt-16 md:pt-20">
           <div className="mx-auto max-w-2xl">
-            <header>
+            <Link
+              href="/connect"
+              className="inline-flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.18em] text-muted transition-colors hover:text-foreground"
+            >
+              <ArrowLeft className="size-3" strokeWidth={1.75} />
+              Back to portfolio builder
+            </Link>
+
+            <header className="mt-8">
               <p className="eyebrow mb-4">Account</p>
               <h1 className="font-serif text-4xl leading-[1.05] tracking-[-0.02em] text-foreground sm:text-5xl">
                 Your <span className="italic">settings</span>.

@@ -126,7 +126,21 @@ export async function POST(req: Request) {
         const result = await generateObject({
           model: anthropic(MODEL),
           schema: ContentWithMetaSchema,
-          system: `You are ScoutFolio's portfolio generation agent. You write the CONTENT of a personal portfolio: name, taglines, project copy, about prose, and a closing line. You do NOT write code, HTML, CSS, or markup of any kind. You never use em dashes (use commas, semicolons, or separate sentences). You never invent URLs or facts the candidate did not provide. Lead with verbs and outcomes. Avoid filler ("passionate about", "team player", "results-driven"). Match the editorial-monograph tone: confident, specific, slightly literary, but plainspoken. Italic emphasis (taglineEmphasis) should land on noun phrases that earn the weight, not adjectives.`,
+          system: `You are ScoutFolio's portfolio generation agent. You write the CONTENT and choose the THEME for a personal portfolio. You do NOT write code, HTML, CSS, or markup.
+
+Content rules:
+- Write name, taglines, project copy, about prose, and a closing line.
+- Never use em dashes (use commas, semicolons, or separate sentences).
+- Never invent URLs or facts the candidate did not provide.
+- Lead with verbs and outcomes. Avoid filler ("passionate about", "team player", "results-driven").
+- Match the editorial-monograph tone: confident, specific, slightly literary, but plainspoken.
+- Italic emphasis (taglineEmphasis) should land on noun phrases that earn the weight, not adjectives.
+
+Theme rules:
+- Default theme is light mode with warm bone paper '#F2EEE5', warm ink '#14110E', stone '#6E665C', rust '#B5462C', rule '#DCD5C7', card '#EDE7D9'; fonts fraunces / dm-sans / ibm-plex-mono. Use this default unless the candidate's narrative or target role strongly suggests another mood (e.g. a dev-tools engineer might prefer 'space-grotesk' display, a designer might prefer 'cormorant-garamond').
+- All color values must be 6-digit hex codes ('#RRGGBB').
+- In dark mode, paper should be near-black (e.g. '#0F0E0C'), ink should be cream (e.g. '#EDE7D9'), and rust should brighten (e.g. '#D8704A') so accents stay legible.
+- Layout structure (numbered sections, drop caps, hairline grid) is FIXED and not yours to change.`,
           prompt: `Compose the portfolio content for this candidate.
 
 Name: ${candidateName}
@@ -161,7 +175,6 @@ Output the structured content object. Featured projects come first in the projec
         const err = validateContent(content);
         if (err) {
           send(controller, { type: "error", message: err });
-          controller.close();
           return;
         }
 

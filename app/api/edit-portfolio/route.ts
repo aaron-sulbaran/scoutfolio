@@ -98,16 +98,24 @@ export async function POST(req: Request) {
         const result = await generateObject({
           model: anthropic(MODEL),
           schema: ContentSchema,
-          system: `You are ScoutFolio's portfolio EDITING agent. The user has an existing portfolio content object and is asking for a specific change. Apply ONLY that change. Preserve every other field of the content object exactly as it was.
+          system: `You are ScoutFolio's portfolio EDITING agent. The user has an existing portfolio content object (including a theme) and is asking for a specific change. Apply ONLY that change. Preserve every other field of the content object exactly as it was.
 
 Strict rules:
-- Output the FULL updated content object (every field). Fields the user did not ask to change must be byte-for-byte identical to the input.
+- Output the FULL updated content object (every field, including the theme object). Fields the user did not ask to change must be byte-for-byte identical to the input.
 - Never invent new projects, links, employers, metrics, or facts the user did not provide.
 - Never use em dashes (use commas, semicolons, or separate sentences).
 - Match the existing editorial-monograph tone.
-- If the user asks for styling, layout, color, font, or theme changes, leave the content object UNCHANGED. The client surfaces a separate notice for those requests.
+- taglineEmphasis phrases must appear verbatim in tagline.
 - If the user asks for something ambiguous, make the smallest reasonable interpretation and apply it.
-- taglineEmphasis phrases must appear verbatim in tagline.`,
+
+Theme editing is ALLOWED:
+- "Make it darker" / "dark mode" / "go dark" / "switch to night" → set theme.mode to 'dark', shift colors to a near-black paper (e.g. '#0F0E0C'), cream ink (e.g. '#EDE7D9'), brighter rust (e.g. '#D8704A'), and dark rule + card.
+- "Make it lighter" / "back to light" → mirror the inverse.
+- "Use [color] as the accent" → update theme.colors.rust to a hex matching the requested hue, picking a saturation that holds against the current paper.
+- "Cooler / warmer / more saturated palette" → shift all six color tokens coherently while keeping mode and the accent's role intact.
+- "Use a [font]" → if the user names a font that maps to one of the allowed enums (fraunces, instrument-serif, playfair-display, cormorant-garamond, space-grotesk, dm-sans, inter-tight, manrope, work-sans, geist, ibm-plex-mono, jetbrains-mono, geist-mono, space-mono), pick the closest enum value. If they ask for something not on the list, pick the closest spiritual cousin and proceed.
+- All color values must be 6-digit hex codes ('#RRGGBB').
+- Layout structure (numbered sections, drop caps, hairline grid, section ordering) is FIXED and not yours to change. If the user asks to change layout/structure (e.g. "use a sidebar", "two-column hero", "make sections horizontal"), leave the content object UNCHANGED so the client surfaces a separate notice.`,
           prompt: `Current portfolio content (JSON):
 ${JSON.stringify(currentContent, null, 2)}
 ${historyContext}
@@ -126,7 +134,6 @@ Return the FULL updated content object with the user's requested change applied.
         const err = validateContent(updated);
         if (err) {
           send(controller, { type: "error", message: err });
-          controller.close();
           return;
         }
 
@@ -139,9 +146,8 @@ Return the FULL updated content object with the user's requested change applied.
           send(controller, {
             type: "no_op",
             message:
-              "I can only edit content right now (text, projects, focus areas, links). Styling changes (colors, fonts, dark mode) need a separate theme variant we haven't shipped yet.",
+              "I can change text, projects, palette, fonts, and light/dark mode, but the layout (numbered sections, drop caps, hairline grid) is fixed for this version. Try a content or theme tweak instead.",
           });
-          controller.close();
           return;
         }
 
@@ -167,7 +173,10 @@ Return the FULL updated content object with the user's requested change applied.
             previewHtml: composed.previewHtml,
             content: updated,
             summary,
-            meta,
+            meta: {
+              name: meta.slug,
+              title: meta.title,
+            },
           },
         });
       } catch (err) {
@@ -222,6 +231,13 @@ function describeChange(
     changes.push("about");
   if (JSON.stringify(before.contact) !== JSON.stringify(after.contact))
     changes.push("contact");
+  if (JSON.stringify(before.theme) !== JSON.stringify(after.theme)) {
+    if (before.theme.mode !== after.theme.mode) {
+      changes.push(`theme (${after.theme.mode} mode)`);
+    } else {
+      changes.push("theme");
+    }
+  }
 
   if (changes.length === 0) return "Applied your edit.";
   if (changes.length === 1) return `Updated ${changes[0]}.`;

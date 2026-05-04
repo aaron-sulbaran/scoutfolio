@@ -1,3 +1,12 @@
+import {
+  BODY_FONTS,
+  DISPLAY_FONTS,
+  MONO_FONTS,
+  dotColorFor,
+  selectionFgFor,
+  type Theme,
+} from "./themes";
+
 export type ScaffoldFile = { path: string; content: string };
 
 const PACKAGE_JSON = `{
@@ -81,32 +90,21 @@ out
 next-env.d.ts
 `;
 
-const LAYOUT = `import type { Metadata } from "next";
-import { Fraunces, DM_Sans, IBM_Plex_Mono } from "next/font/google";
+function buildLayout(theme: Theme, title: string): string {
+  const display = DISPLAY_FONTS[theme.fonts.display];
+  const body = BODY_FONTS[theme.fonts.body];
+  const mono = MONO_FONTS[theme.fonts.mono];
+
+  return `import type { Metadata } from "next";
+import { ${display.importName}, ${body.importName}, ${mono.importName} } from "next/font/google";
 import "./globals.css";
 
-const fraunces = Fraunces({
-  subsets: ["latin"],
-  variable: "--font-fraunces",
-  style: ["normal", "italic"],
-  display: "swap",
-});
-
-const dmSans = DM_Sans({
-  subsets: ["latin"],
-  variable: "--font-dm-sans",
-  display: "swap",
-});
-
-const ibmMono = IBM_Plex_Mono({
-  subsets: ["latin"],
-  variable: "--font-ibm-mono",
-  weight: ["400", "500"],
-  display: "swap",
-});
+const displayFont = ${display.importName}(${display.nextFontConfig});
+const bodyFont = ${body.importName}(${body.nextFontConfig});
+const monoFont = ${mono.importName}(${mono.nextFontConfig});
 
 export const metadata: Metadata = {
-  title: "PORTFOLIO_TITLE",
+  title: ${JSON.stringify(title)},
 };
 
 export default function RootLayout({
@@ -115,49 +113,55 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={\`\${fraunces.variable} \${dmSans.variable} \${ibmMono.variable} antialiased\`}
+      className={\`\${displayFont.variable} \${bodyFont.variable} \${monoFont.variable} antialiased\`}
     >
       <body className="min-h-dvh bg-paper text-ink">{children}</body>
     </html>
   );
 }
 `;
+}
 
-const GLOBALS_CSS = `@import "tailwindcss";
+function buildGlobalsCss(theme: Theme): string {
+  const display = DISPLAY_FONTS[theme.fonts.display];
+  const body = BODY_FONTS[theme.fonts.body];
+  const mono = MONO_FONTS[theme.fonts.mono];
+  const dotColor = dotColorFor(theme.mode);
+  const selectionFg = selectionFgFor(theme);
+
+  return `@import "tailwindcss";
 
 @theme {
-  --color-paper: #F2EEE5;
-  --color-paper-soft: #ECE7DA;
-  --color-card: #EDE7D9;
-  --color-ink: #14110E;
-  --color-stone: #6E665C;
-  --color-rust: #B5462C;
-  --color-rust-soft: #C8693F;
-  --color-rule: #DCD5C7;
+  --color-paper: ${theme.colors.paper};
+  --color-paper-soft: ${theme.colors.card};
+  --color-card: ${theme.colors.card};
+  --color-ink: ${theme.colors.ink};
+  --color-stone: ${theme.colors.stone};
+  --color-rust: ${theme.colors.rust};
+  --color-rule: ${theme.colors.rule};
 
-  --font-display: var(--font-fraunces), "Iowan Old Style", Georgia, serif;
-  --font-body: var(--font-dm-sans), ui-sans-serif, system-ui, -apple-system, sans-serif;
-  --font-mono: var(--font-ibm-mono), ui-monospace, "SF Mono", Menlo, monospace;
+  --font-display: var(${display.cssVar}), "Iowan Old Style", Georgia, serif;
+  --font-body: var(${body.cssVar}), ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: var(${mono.cssVar}), ui-monospace, "SF Mono", Menlo, monospace;
 }
 
 @layer base {
-  html { color-scheme: light; }
+  html { color-scheme: ${theme.mode}; }
 
   body {
     background: var(--color-paper);
     color: var(--color-ink);
     font-family: var(--font-body);
-    font-feature-settings: "ss01", "cv11";
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
     background-image:
-      radial-gradient(rgba(20, 17, 14, 0.025) 1px, transparent 1px);
+      radial-gradient(${dotColor} 1px, transparent 1px);
     background-size: 3px 3px;
   }
 
   ::selection {
     background: var(--color-rust);
-    color: var(--color-paper);
+    color: ${selectionFg};
   }
 }
 
@@ -203,8 +207,10 @@ const GLOBALS_CSS = `@import "tailwindcss";
   }
 }
 `;
+}
 
-const README = `# PROJECT_NAME
+function buildReadme(theme: Theme): string {
+  return `# PROJECT_NAME
 
 A personal portfolio site, generated for you by ScoutFolio. Deploy as-is, or treat it as a starter and edit the components to taste.
 
@@ -236,30 +242,30 @@ The agent put your content in one place: \`app/data.ts\`. Edit any field there a
 - \`about\` — \`headline\`, \`paragraphs[]\`, and a \`sidebar\` with \`basedIn\`, \`focusAreas[]\`, \`currentlyExploring\`
 - \`contact\` — your closing line and any of \`email\`, \`github\`, \`linkedin\`, \`website\`
 
-The components in \`app/components/\` (\`hero.tsx\`, \`work.tsx\`, \`about.tsx\`, \`contact.tsx\`) read from \`data.ts\` through \`app/page.tsx\`. Layout, palette, and typography live in \`app/globals.css\` and \`app/layout.tsx\`.
+The components in \`app/components/\` (\`hero.tsx\`, \`work.tsx\`, \`about.tsx\`, \`contact.tsx\`) read from \`data.ts\` through \`app/page.tsx\`.
 
-## Design tokens
+## Design tokens (this theme)
 
-Defined in \`app/globals.css\` under \`@theme\`:
+This portfolio shipped in **${theme.mode} mode**. Tokens are defined in \`app/globals.css\` under \`@theme\`:
 
 \`\`\`css
---color-paper:  #F2EEE5  /* page background, bone */
---color-ink:    #14110E  /* primary text, warm ink */
---color-stone:  #6E665C  /* secondary text */
---color-rust:   #B5462C  /* accent: section numerals, rules, links */
---color-card:   #EDE7D9  /* secondary surfaces */
---color-rule:   #DCD5C7  /* hairline borders */
+--color-paper:  ${theme.colors.paper}  /* page background */
+--color-ink:    ${theme.colors.ink}    /* primary text */
+--color-stone:  ${theme.colors.stone}  /* secondary text */
+--color-rust:   ${theme.colors.rust}   /* accent: section numerals, links, rules */
+--color-card:   ${theme.colors.card}   /* secondary surfaces */
+--color-rule:   ${theme.colors.rule}   /* hairline borders */
 \`\`\`
 
-Change a variable, every utility class follows.
+Change a hex value, every utility class follows.
 
 ## Typography
 
 Three fonts via \`next/font/google\`:
 
-- Fraunces (display serif, italic for emphasis)
-- DM Sans (body)
-- IBM Plex Mono (eyebrow labels and metadata)
+- ${DISPLAY_FONTS[theme.fonts.display].cssFamily} (display)
+- ${BODY_FONTS[theme.fonts.body].cssFamily} (body)
+- ${MONO_FONTS[theme.fonts.mono].cssFamily} (eyebrows and metadata)
 
 Swap them in \`app/layout.tsx\` if you prefer something else.
 
@@ -272,28 +278,34 @@ Swap them in \`app/layout.tsx\` if you prefer something else.
 
 That is it. No runtime dependencies beyond the framework.
 `;
+}
 
-const STATIC_FILES: ScaffoldFile[] = [
+const STATIC_FILES_BASE: Array<{ path: string; content: string }> = [
   { path: "package.json", content: PACKAGE_JSON },
   { path: "tsconfig.json", content: TSCONFIG },
   { path: "next.config.ts", content: NEXT_CONFIG },
   { path: "postcss.config.js", content: POSTCSS_CONFIG },
   { path: ".gitignore", content: GITIGNORE },
-  { path: "app/layout.tsx", content: LAYOUT },
-  { path: "app/globals.css", content: GLOBALS_CSS },
-  { path: "README.md", content: README },
 ];
 
 export function buildScaffold(opts: {
   projectName: string;
   title: string;
+  theme: Theme;
 }): ScaffoldFile[] {
-  return STATIC_FILES.map(({ path, content }) => ({
-    path,
-    content: content
-      .replace(/PROJECT_NAME/g, opts.projectName)
-      .replace(/PORTFOLIO_TITLE/g, opts.title),
-  }));
+  const dynamicFiles: ScaffoldFile[] = [
+    { path: "app/layout.tsx", content: buildLayout(opts.theme, opts.title) },
+    { path: "app/globals.css", content: buildGlobalsCss(opts.theme) },
+    { path: "README.md", content: buildReadme(opts.theme) },
+  ];
+  return [
+    ...STATIC_FILES_BASE.map(({ path, content }) => ({
+      path,
+      content: content.replace(/PROJECT_NAME/g, opts.projectName),
+    })),
+    ...dynamicFiles.map(({ path, content }) => ({
+      path,
+      content: content.replace(/PROJECT_NAME/g, opts.projectName),
+    })),
+  ];
 }
-
-export const SCAFFOLD_GLOBALS_CSS = GLOBALS_CSS;

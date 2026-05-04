@@ -1,7 +1,76 @@
 import { z } from "zod";
+import { isValidHex } from "./themes";
 
 // Anthropic structured-output cannot use minItems > 1, maxItems, minimum, or
 // maximum. Constraints are expressed in .describe() text instead.
+
+export const ThemeSchema = z.object({
+  mode: z
+    .enum(["light", "dark"])
+    .describe(
+      "Overall color scheme. 'light' for cream/paper backgrounds, 'dark' for near-black/charcoal backgrounds. Drives the html color-scheme and the dot-pattern luminance."
+    ),
+  colors: z.object({
+    paper: z
+      .string()
+      .describe(
+        "Page background color. 6-digit hex like '#F2EEE5'. Should match mode (light = cream/bone/oat, dark = near-black/deep brown/charcoal)."
+      ),
+    ink: z
+      .string()
+      .describe(
+        "Primary text color. 6-digit hex. High contrast against paper."
+      ),
+    stone: z
+      .string()
+      .describe(
+        "Muted secondary text color. 6-digit hex. Sits between paper and ink in luminance."
+      ),
+    rust: z
+      .string()
+      .describe(
+        "Accent color used for section numerals, links, the rust rule, the underline. 6-digit hex. Should be a confident hue with enough contrast against paper."
+      ),
+    rule: z
+      .string()
+      .describe(
+        "Hairline border color. 6-digit hex. A subtle tint of the paper color, slightly more saturated."
+      ),
+    card: z
+      .string()
+      .describe(
+        "Secondary surface color used for stack pills and soft chips. 6-digit hex. Slightly off from paper."
+      ),
+  }),
+  fonts: z.object({
+    display: z
+      .enum([
+        "fraunces",
+        "instrument-serif",
+        "playfair-display",
+        "cormorant-garamond",
+        "space-grotesk",
+      ])
+      .describe(
+        "Display typeface for the hero name and section headlines. Pick a serif for editorial feel, 'space-grotesk' for sharper modernist."
+      ),
+    body: z
+      .enum(["dm-sans", "inter-tight", "manrope", "work-sans", "geist"])
+      .describe(
+        "Body typeface for prose. All five are clean modern sans-serifs."
+      ),
+    mono: z
+      .enum([
+        "ibm-plex-mono",
+        "jetbrains-mono",
+        "geist-mono",
+        "space-mono",
+      ])
+      .describe(
+        "Monospace typeface for eyebrow labels, project numerals, and stack pills."
+      ),
+  }),
+});
 
 export const ContentSchema = z.object({
   name: z
@@ -141,6 +210,9 @@ export const ContentSchema = z.object({
       .optional()
       .describe("Pass through from input contact.website if provided."),
   }),
+  theme: ThemeSchema.describe(
+    "Color palette and typography for the portfolio. The agent may set or change this. Layout structure (numbered sections, drop caps, grid) is fixed and not part of the theme."
+  ),
 });
 
 export const ContentWithMetaSchema = ContentSchema.extend({
@@ -194,6 +266,20 @@ export function validateContent(
   }
   if (content.projects.length === 0) {
     return "projects is empty after filtering; nothing to display";
+  }
+  const colors = content.theme.colors;
+  const colorEntries: Array<[string, string]> = [
+    ["paper", colors.paper],
+    ["ink", colors.ink],
+    ["stone", colors.stone],
+    ["rust", colors.rust],
+    ["rule", colors.rule],
+    ["card", colors.card],
+  ];
+  for (const [name, val] of colorEntries) {
+    if (!isValidHex(val)) {
+      return `theme.colors.${name} must be a 6-digit hex like '#F2EEE5' (got '${val}')`;
+    }
   }
   return null;
 }

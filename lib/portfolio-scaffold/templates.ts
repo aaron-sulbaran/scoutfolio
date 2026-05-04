@@ -1,4 +1,12 @@
 import type { ScaffoldFile } from "./files";
+import {
+  BODY_FONTS,
+  DISPLAY_FONTS,
+  MONO_FONTS,
+  dotColorFor,
+  selectionFgFor,
+  type Theme,
+} from "./themes";
 
 // ---------------------------------------------------------------------------
 // PortfolioContent: the structured data the agent emits. Both the export TSX
@@ -43,6 +51,7 @@ export type PortfolioContent = {
     linkedin?: string;
     website?: string;
   };
+  theme: Theme;
 };
 
 // ---------------------------------------------------------------------------
@@ -80,6 +89,11 @@ function ensureProtocol(url: string): string {
 // ---------------------------------------------------------------------------
 
 export function buildDataModule(content: PortfolioContent): string {
+  // Theme drives globals.css/layout.tsx and is baked into static files at
+  // compose time. data.ts only carries per-user content text.
+  const { theme: _theme, ...contentWithoutTheme } = content;
+  void _theme;
+
   const stringify = (val: unknown, indent = 0): string => {
     const pad = "  ".repeat(indent);
     if (val === undefined) return "undefined";
@@ -141,7 +155,7 @@ export type PortfolioContent = {
   };
 };
 
-export const content: PortfolioContent = ${stringify(content)};
+export const content: PortfolioContent = ${stringify(contentWithoutTheme)};
 `;
 }
 
@@ -556,31 +570,38 @@ function linkLabel(href: string): string {
   }
 }
 
-const PREVIEW_CSS = `
+function buildPreviewCss(theme: Theme): string {
+  const display = DISPLAY_FONTS[theme.fonts.display];
+  const body = BODY_FONTS[theme.fonts.body];
+  const mono = MONO_FONTS[theme.fonts.mono];
+  const dotColor = dotColorFor(theme.mode);
+  const selectionFg = selectionFgFor(theme);
+
+  return `
   :root {
-    --color-paper: #F2EEE5;
-    --color-paper-soft: #ECE7DA;
-    --color-card: #EDE7D9;
-    --color-ink: #14110E;
-    --color-stone: #6E665C;
-    --color-rust: #B5462C;
-    --color-rule: #DCD5C7;
-    --font-display: 'Fraunces', 'Iowan Old Style', Georgia, serif;
-    --font-body: 'DM Sans', ui-sans-serif, system-ui, -apple-system, sans-serif;
-    --font-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+    --color-paper: ${theme.colors.paper};
+    --color-paper-soft: ${theme.colors.card};
+    --color-card: ${theme.colors.card};
+    --color-ink: ${theme.colors.ink};
+    --color-stone: ${theme.colors.stone};
+    --color-rust: ${theme.colors.rust};
+    --color-rule: ${theme.colors.rule};
+    --font-display: '${display.cssFamily}', 'Iowan Old Style', Georgia, serif;
+    --font-body: '${body.cssFamily}', ui-sans-serif, system-ui, -apple-system, sans-serif;
+    --font-mono: '${mono.cssFamily}', ui-monospace, 'SF Mono', Menlo, monospace;
   }
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  html { color-scheme: light; -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
+  html { color-scheme: ${theme.mode}; -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
   body {
     background: var(--color-paper);
     color: var(--color-ink);
     font-family: var(--font-body);
     font-size: 16px;
     line-height: 1.5;
-    background-image: radial-gradient(rgba(20, 17, 14, 0.025) 1px, transparent 1px);
+    background-image: radial-gradient(${dotColor} 1px, transparent 1px);
     background-size: 3px 3px;
   }
-  ::selection { background: var(--color-rust); color: var(--color-paper); }
+  ::selection { background: var(--color-rust); color: ${selectionFg}; }
 
   a { color: inherit; text-decoration: none; }
 
@@ -623,7 +644,7 @@ const PREVIEW_CSS = `
     font-family: var(--font-display);
     font-size: 26px;
     line-height: 1.25;
-    color: rgba(20, 17, 14, 0.92);
+    color: color-mix(in srgb, var(--color-ink) 92%, transparent);
     margin-top: 48px;
     max-width: 640px;
   }
@@ -636,7 +657,7 @@ const PREVIEW_CSS = `
     max-width: 560px;
     font-size: 17px;
     line-height: 1.7;
-    color: rgba(20, 17, 14, 0.85);
+    color: color-mix(in srgb, var(--color-ink) 85%, transparent);
   }
   .hero .intro::first-letter {
     font-family: var(--font-display);
@@ -755,7 +776,7 @@ const PREVIEW_CSS = `
     max-width: 640px;
     font-size: 15px;
     line-height: 1.7;
-    color: rgba(20, 17, 14, 0.85);
+    color: color-mix(in srgb, var(--color-ink) 85%, transparent);
   }
   .work-outcome {
     margin-top: 16px;
@@ -764,7 +785,7 @@ const PREVIEW_CSS = `
     padding-left: 16px;
     font-size: 14px;
     line-height: 1.6;
-    color: rgba(20, 17, 14, 0.92);
+    color: color-mix(in srgb, var(--color-ink) 92%, transparent);
   }
   .work-stack { margin-top: 24px; display: flex; flex-wrap: wrap; gap: 6px; }
   .work-stack li {
@@ -790,7 +811,7 @@ const PREVIEW_CSS = `
     grid-template-columns: 1fr;
     gap: 48px;
   }
-  .about-prose { display: flex; flex-direction: column; gap: 20px; font-size: 15px; line-height: 1.75; color: rgba(20, 17, 14, 0.85); }
+  .about-prose { display: flex; flex-direction: column; gap: 20px; font-size: 15px; line-height: 1.75; color: color-mix(in srgb, var(--color-ink) 85%, transparent); }
   .about-prose p:first-child::first-letter {
     font-family: var(--font-display);
     font-style: italic;
@@ -820,9 +841,9 @@ const PREVIEW_CSS = `
     font-family: var(--font-display);
     font-size: 18px;
     font-style: italic;
-    color: rgba(20, 17, 14, 0.9);
+    color: color-mix(in srgb, var(--color-ink) 90%, transparent);
   }
-  .about-sidebar dd.value-text { font-size: 14px; line-height: 1.65; color: rgba(20, 17, 14, 0.9); }
+  .about-sidebar dd.value-text { font-size: 14px; line-height: 1.65; color: color-mix(in srgb, var(--color-ink) 90%, transparent); }
 
   @media (min-width: 768px) {
     .about-grid { grid-template-columns: 1.6fr 1fr; gap: 64px; }
@@ -872,8 +893,15 @@ const PREVIEW_CSS = `
     .contact-line { font-size: 32px; }
   }
 `;
+}
 
 export function buildPreviewHtml(content: PortfolioContent): string {
+  const theme = content.theme;
+  const display = DISPLAY_FONTS[theme.fonts.display];
+  const body = BODY_FONTS[theme.fonts.body];
+  const mono = MONO_FONTS[theme.fonts.mono];
+  const fontsHref = `https://fonts.googleapis.com/css2?family=${display.googleSpec}&family=${body.googleSpec}&family=${mono.googleSpec}&display=swap`;
+  const previewCss = buildPreviewCss(theme);
   const links: Array<{ label: string; href: string }> = [];
   if (content.contact.email)
     links.push({ label: "Email", href: `mailto:${content.contact.email}` });
@@ -1061,8 +1089,8 @@ export function buildPreviewHtml(content: PortfolioContent): string {
 <title>${escapeHtml(content.name)}</title>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..700;1,9..144,300..700&family=DM+Sans:wght@400;500&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
-<style>${PREVIEW_CSS}</style>
+<link href="${fontsHref}" rel="stylesheet" />
+<style>${previewCss}</style>
 </head>
 <body>
 ${hero}

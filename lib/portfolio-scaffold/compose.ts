@@ -19,6 +19,7 @@ export function composePortfolio(opts: {
   const scaffold = buildScaffold({
     projectName: opts.projectName,
     title: opts.title,
+    theme: opts.content.theme,
   });
   const components = buildComponentFiles();
   const dataFile: ScaffoldFile = {

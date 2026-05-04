@@ -614,10 +614,10 @@ function EmptyChat() {
       </div>
       <ul className="flex flex-col gap-2">
         {[
+          "Switch to dark mode.",
+          "Use a deep forest green as the accent instead of rust.",
           "Make the tagline punchier and emphasize 'shipping'.",
           "Reorder the projects so the financial app is first.",
-          "Tighten the about section to two paragraphs.",
-          "Add 'open source' to my focus areas.",
         ].map((s) => (
           <li
             key={s}

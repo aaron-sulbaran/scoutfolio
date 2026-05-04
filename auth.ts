@@ -1,6 +1,7 @@
 import NextAuth, { type DefaultSession } from "next-auth";
 import Google from "next-auth/providers/google";
 import GitHub from "next-auth/providers/github";
+import { getProfile, patchProfile } from "@/lib/profiles";
 
 declare module "next-auth" {
   interface Session {
@@ -34,13 +35,44 @@ export const { handlers, signIn, signOut, auth, unstable_update } = NextAuth({
   },
   session: { strategy: "jwt" },
   callbacks: {
-    async jwt({ token, trigger, session, account, profile }) {
+    async jwt({ token, user, trigger, session, account, profile }) {
       const t = token as TokenWithExtras;
+
+      // On initial sign-in, hydrate persisted profile from Upstash so that a
+      // returning user keeps their narrative and display-name preferences
+      // across sign-out / sign-in cycles. The `user` param is only present
+      // on the very first jwt() call after authentication.
+      if (user) {
+        const email = (user.email ?? (token.email as string | undefined)) ?? "";
+        if (email) {
+          const stored = await getProfile(email);
+          if (stored) {
+            if (stored.onboardingNarrative && !t.onboardingNarrative) {
+              t.onboardingNarrative = stored.onboardingNarrative;
+            }
+            if (stored.displayName && !t.displayName) {
+              t.displayName = stored.displayName;
+            }
+            if (stored.githubLogin && !t.githubLogin) {
+              t.githubLogin = stored.githubLogin;
+            }
+          }
+        }
+      }
 
       if (account?.provider === "github" && account.access_token) {
         t.githubToken = account.access_token;
         const ghProfile = profile as { login?: string } | undefined;
-        if (ghProfile?.login) t.githubLogin = ghProfile.login;
+        if (ghProfile?.login) {
+          t.githubLogin = ghProfile.login;
+          // Persist the GitHub handle so future sign-ins remember it even
+          // after the user signs out (the access token itself stays JWT-only).
+          const persistEmail =
+            (user?.email ?? (token.email as string | undefined)) ?? "";
+          if (persistEmail) {
+            await patchProfile(persistEmail, { githubLogin: ghProfile.login });
+          }
+        }
       }
 
       if (trigger === "update" && session && typeof session === "object") {

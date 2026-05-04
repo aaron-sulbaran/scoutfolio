@@ -1,7 +1,8 @@
 "use server";
 
 import { redirect } from "next/navigation";
-import { signIn, signOut, unstable_update } from "@/auth";
+import { signIn, signOut, unstable_update, auth } from "@/auth";
+import { patchProfile } from "@/lib/profiles";
 
 export async function signInWithGoogle() {
   await signIn("google", { redirectTo: "/start" });
@@ -9,6 +10,11 @@ export async function signInWithGoogle() {
 
 export async function signOutAction() {
   await signOut({ redirectTo: "/" });
+}
+
+async function currentEmail(): Promise<string | null> {
+  const session = await auth();
+  return session?.user?.email ?? null;
 }
 
 export async function saveNarrative(formData: FormData) {
@@ -21,6 +27,8 @@ export async function saveNarrative(formData: FormData) {
   await unstable_update({
     onboardingNarrative,
   } as unknown as Parameters<typeof unstable_update>[0]);
+  const email = await currentEmail();
+  if (email) await patchProfile(email, { onboardingNarrative });
   redirect("/connect");
 }
 
@@ -34,6 +42,8 @@ export async function updateNarrative(formData: FormData) {
   await unstable_update({
     onboardingNarrative,
   } as unknown as Parameters<typeof unstable_update>[0]);
+  const email = await currentEmail();
+  if (email) await patchProfile(email, { onboardingNarrative });
   redirect("/settings?saved=narrative");
 }
 
@@ -43,6 +53,8 @@ export async function updateDisplayName(formData: FormData) {
   await unstable_update({
     displayName,
   } as unknown as Parameters<typeof unstable_update>[0]);
+  const email = await currentEmail();
+  if (email) await patchProfile(email, { displayName });
   redirect(displayName ? "/settings?saved=name" : "/settings?saved=name-cleared");
 }
 
