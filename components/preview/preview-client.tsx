@@ -1,7 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useRouter } from "next/navigation";
 import {
   ArrowLeft,
@@ -10,21 +16,43 @@ import {
   Download,
   FileText,
   Loader2,
+  MessageSquare,
+  Send,
+  Undo2,
   X,
 } from "lucide-react";
 import { ScoutMark } from "@/components/scout-mark";
+import type { PortfolioContent } from "@/lib/portfolio-scaffold/compose";
 
 type GeneratedFile = { path: string; content: string };
 
 type Generated = {
   files: GeneratedFile[];
   previewHtml: string;
+  content: PortfolioContent;
   meta: { name: string; title: string };
+  summary?: string;
 };
 
 type Mode = "preview" | "code";
 
-const STORAGE_KEY = "scoutfolio.generated.v1";
+type ChatMsg =
+  | { id: string; kind: "user"; text: string }
+  | { id: string; kind: "assistant"; text: string }
+  | { id: string; kind: "status"; text: string }
+  | { id: string; kind: "error"; text: string }
+  | { id: string; kind: "notice"; text: string };
+
+const STORAGE_KEY = "scoutfolio.generated.v2";
+const UNDO_CAP = 5;
+const HISTORY_PAIRS = 6;
+const MESSAGE_MAX = 500;
+
+let messageIdCounter = 0;
+function nextMessageId(): string {
+  messageIdCounter += 1;
+  return `msg-${messageIdCounter}`;
+}
 
 export function PreviewClient() {
   const router = useRouter();
@@ -34,10 +62,12 @@ export function PreviewClient() {
   const [exportOpen, setExportOpen] = useState(false);
   const [downloading, setDownloading] = useState(false);
 
+  const [messages, setMessages] = useState<ChatMsg[]>([]);
+  const [undoStack, setUndoStack] = useState<Generated[]>([]);
+  const [sending, setSending] = useState(false);
+  const [chatOpen, setChatOpen] = useState(false);
+
   useEffect(() => {
-    // Read the generation result from sessionStorage. This is a one-shot read
-    // on mount, not an external-store subscription, so the standard
-    // useEffect-with-setState pattern is the right tool.
     try {
       const raw = sessionStorage.getItem(STORAGE_KEY);
       if (!raw) {
@@ -45,8 +75,24 @@ export function PreviewClient() {
         return;
       }
       const parsed = JSON.parse(raw) as Generated;
+      if (!parsed.content) {
+        // v1 payload without content; can't edit. Force user to regenerate.
+        sessionStorage.removeItem(STORAGE_KEY);
+        router.replace("/connect");
+        return;
+      }
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setData(parsed);
+      if (parsed.summary) {
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        setMessages([
+          {
+            id: nextMessageId(),
+            kind: "assistant",
+            text: parsed.summary,
+          },
+        ]);
+      }
     } catch {
       router.replace("/connect");
     }
@@ -61,6 +107,188 @@ export function PreviewClient() {
     if (!data) return undefined;
     return data.files.find((f) => f.path === selectedPath);
   }, [data, selectedPath]);
+
+  const handleSend = useCallback(
+    async (text: string) => {
+      if (!data || sending) return;
+      const trimmed = text.trim();
+      if (!trimmed) return;
+
+      setSending(true);
+      setMessages((prev) => [
+        ...prev,
+        { id: nextMessageId(), kind: "user", text: trimmed },
+      ]);
+
+      // Build history from chat messages; only user/assistant turns, capped.
+      const history = messages
+        .filter(
+          (m): m is Extract<ChatMsg, { kind: "user" | "assistant" }> =>
+            m.kind === "user" || m.kind === "assistant"
+        )
+        .slice(-(HISTORY_PAIRS * 2))
+        .map((m) => ({
+          role: m.kind === "user" ? ("user" as const) : ("assistant" as const),
+          text: m.text,
+        }));
+
+      try {
+        const res = await fetch("/api/edit-portfolio", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            message: trimmed,
+            history,
+            meta: { slug: data.meta.name, title: data.meta.title },
+            currentContent: data.content,
+          }),
+        });
+
+        if (res.status === 429) {
+          let msg = "Edit limit reached.";
+          try {
+            const body = await res.json();
+            if (body.message) msg = body.message;
+          } catch {}
+          setMessages((prev) => [
+            ...prev,
+            { id: nextMessageId(), kind: "error", text: msg },
+          ]);
+          return;
+        }
+        if (!res.ok) {
+          const body = await res.text();
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: nextMessageId(),
+              kind: "error",
+              text: `Request failed (${res.status}): ${body.slice(0, 240)}`,
+            },
+          ]);
+          return;
+        }
+        if (!res.body) {
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: nextMessageId(),
+              kind: "error",
+              text: "No response body from agent.",
+            },
+          ]);
+          return;
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let updated: Generated | null = null;
+        let agentSummary: string | undefined;
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() ?? "";
+          for (const line of lines) {
+            const t = line.trim();
+            if (!t) continue;
+            let evt: { type: string; [k: string]: unknown };
+            try {
+              evt = JSON.parse(t);
+            } catch {
+              continue;
+            }
+            if (evt.type === "status") {
+              setMessages((prev) => [
+                ...prev,
+                {
+                  id: nextMessageId(),
+                  kind: "status",
+                  text: String(evt.text),
+                },
+              ]);
+            } else if (evt.type === "no_op") {
+              setMessages((prev) => [
+                ...prev,
+                {
+                  id: nextMessageId(),
+                  kind: "notice",
+                  text: String(evt.message),
+                },
+              ]);
+            } else if (evt.type === "error") {
+              setMessages((prev) => [
+                ...prev,
+                {
+                  id: nextMessageId(),
+                  kind: "error",
+                  text: String(evt.message),
+                },
+              ]);
+            } else if (evt.type === "complete") {
+              const completePayload = evt.data as Generated;
+              updated = completePayload;
+              agentSummary = completePayload.summary;
+            }
+          }
+        }
+
+        if (updated) {
+          const next = updated;
+          setUndoStack((stack) => [...stack, data].slice(-UNDO_CAP));
+          setData(next);
+          try {
+            sessionStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+          } catch (err) {
+            console.warn("[preview] sessionStorage write failed:", err);
+          }
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: nextMessageId(),
+              kind: "assistant",
+              text: agentSummary ?? "Done.",
+            },
+          ]);
+        }
+      } catch (err) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: nextMessageId(),
+            kind: "error",
+            text: err instanceof Error ? err.message : String(err),
+          },
+        ]);
+      } finally {
+        setSending(false);
+      }
+    },
+    [data, sending, messages]
+  );
+
+  const handleUndo = useCallback(() => {
+    if (undoStack.length === 0) return;
+    const prev = undoStack[undoStack.length - 1];
+    setUndoStack((stack) => stack.slice(0, -1));
+    setData(prev);
+    try {
+      sessionStorage.setItem(STORAGE_KEY, JSON.stringify(prev));
+    } catch (err) {
+      console.warn("[preview] sessionStorage write failed:", err);
+    }
+    setMessages((m) => [
+      ...m,
+      {
+        id: nextMessageId(),
+        kind: "notice",
+        text: "Reverted to previous version.",
+      },
+    ]);
+  }, [undoStack]);
 
   if (!data) {
     return (
@@ -123,7 +351,7 @@ export function PreviewClient() {
             <span className="font-mono text-[11px] uppercase tracking-[0.2em] text-muted">
               Preview
             </span>
-            <span className="font-medium text-sm text-foreground">
+            <span className="text-sm font-medium text-foreground">
               {data.meta.name}
             </span>
           </div>
@@ -132,7 +360,15 @@ export function PreviewClient() {
             <ModeToggle mode={mode} onChange={setMode} />
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setChatOpen((o) => !o)}
+              className="inline-flex size-8 items-center justify-center rounded-full text-muted transition-colors hover:bg-foreground/[0.04] hover:text-foreground lg:hidden"
+              aria-label="Toggle chat"
+            >
+              <MessageSquare className="size-4" />
+            </button>
             <span className="hidden font-mono text-[11px] text-muted sm:inline">
               {data.files.length} files
             </span>
@@ -151,18 +387,30 @@ export function PreviewClient() {
         </div>
       </header>
 
-      <div className="flex-1">
-        {mode === "preview" ? (
-          <PreviewFrame html={data.previewHtml} />
-        ) : (
-          <CodeView
-            files={data.files}
-            tree={fileTree}
-            selectedPath={selectedPath}
-            onSelect={setSelectedPath}
-            selected={selectedFile}
-          />
-        )}
+      <div className="flex flex-1 flex-col lg:grid lg:grid-cols-[360px_1fr]">
+        <ChatPanel
+          messages={messages}
+          sending={sending}
+          canUndo={undoStack.length > 0}
+          onSend={handleSend}
+          onUndo={handleUndo}
+          openOnMobile={chatOpen}
+          onCloseMobile={() => setChatOpen(false)}
+        />
+
+        <div className="min-h-0 flex-1">
+          {mode === "preview" ? (
+            <PreviewFrame html={data.previewHtml} />
+          ) : (
+            <CodeView
+              files={data.files}
+              tree={fileTree}
+              selectedPath={selectedPath}
+              onSelect={setSelectedPath}
+              selected={selectedFile}
+            />
+          )}
+        </div>
       </div>
 
       {exportOpen && (
@@ -216,6 +464,238 @@ function PreviewFrame({ html }: { html: string }) {
     />
   );
 }
+
+// ---------------------------------------------------------------------------
+// Chat panel
+// ---------------------------------------------------------------------------
+
+function ChatPanel({
+  messages,
+  sending,
+  canUndo,
+  onSend,
+  onUndo,
+  openOnMobile,
+  onCloseMobile,
+}: {
+  messages: ChatMsg[];
+  sending: boolean;
+  canUndo: boolean;
+  onSend: (text: string) => void;
+  onUndo: () => void;
+  openOnMobile: boolean;
+  onCloseMobile: () => void;
+}) {
+  const visibleClass = openOnMobile
+    ? "fixed inset-0 z-30 flex flex-col bg-background lg:static lg:z-auto"
+    : "hidden lg:flex lg:flex-col";
+
+  return (
+    <aside
+      className={`${visibleClass} h-[calc(100dvh-3.5rem)] border-r border-border bg-card/40 lg:h-[calc(100dvh-3.5rem)]`}
+    >
+      <div className="flex items-center justify-between border-b border-border px-5 py-3">
+        <div className="flex items-center gap-2">
+          <span className="font-mono text-[10px] uppercase tracking-[0.22em] text-accent">
+            &sect; chat
+          </span>
+          <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted">
+            Refine your portfolio
+          </span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={onUndo}
+            disabled={!canUndo}
+            className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] text-muted transition-colors hover:bg-foreground/[0.04] hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-muted"
+            title={canUndo ? "Undo last edit" : "Nothing to undo"}
+          >
+            <Undo2 className="size-3" />
+            Undo
+          </button>
+          <button
+            type="button"
+            onClick={onCloseMobile}
+            className="inline-flex size-7 items-center justify-center rounded-full text-muted transition-colors hover:bg-foreground/[0.04] hover:text-foreground lg:hidden"
+            aria-label="Close chat"
+          >
+            <X className="size-3.5" />
+          </button>
+        </div>
+      </div>
+
+      <MessageList messages={messages} sending={sending} />
+
+      <ChatInput onSend={onSend} disabled={sending} />
+    </aside>
+  );
+}
+
+function MessageList({
+  messages,
+  sending,
+}: {
+  messages: ChatMsg[];
+  sending: boolean;
+}) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+  }, [messages, sending]);
+
+  return (
+    <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-5">
+      {messages.length === 0 && !sending ? (
+        <EmptyChat />
+      ) : (
+        <ul className="flex flex-col gap-3">
+          {messages.map((m) => (
+            <li key={m.id}>{renderMessage(m)}</li>
+          ))}
+          {sending && (
+            <li>
+              <div className="flex items-center gap-2 px-1 font-mono text-[10px] uppercase tracking-[0.18em] text-muted">
+                <Loader2 className="size-3 animate-spin" />
+                Thinking
+              </div>
+            </li>
+          )}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function renderMessage(m: ChatMsg) {
+  if (m.kind === "user") {
+    return (
+      <div className="ml-6 rounded-2xl rounded-tr-sm bg-accent px-4 py-2.5 text-[13px] leading-relaxed text-accent-foreground">
+        {m.text}
+      </div>
+    );
+  }
+  if (m.kind === "assistant") {
+    return (
+      <div className="mr-6 rounded-2xl rounded-tl-sm border border-border bg-background px-4 py-2.5 text-[13px] leading-relaxed text-foreground">
+        {m.text}
+      </div>
+    );
+  }
+  if (m.kind === "status") {
+    return (
+      <div className="px-1 font-mono text-[10px] uppercase tracking-[0.16em] text-muted">
+        &middot; {m.text}
+      </div>
+    );
+  }
+  if (m.kind === "notice") {
+    return (
+      <div className="rounded-md border border-accent/30 bg-accent/5 px-3 py-2 text-[12px] leading-relaxed text-accent">
+        {m.text}
+      </div>
+    );
+  }
+  return (
+    <div className="rounded-md border border-red-300/40 bg-red-50/50 px-3 py-2 text-[12px] leading-relaxed text-red-700">
+      {m.text}
+    </div>
+  );
+}
+
+function EmptyChat() {
+  return (
+    <div className="flex h-full flex-col justify-end gap-4">
+      <div className="text-[13px] leading-relaxed text-muted">
+        Ask the agent to refine the portfolio. A few starters:
+      </div>
+      <ul className="flex flex-col gap-2">
+        {[
+          "Make the tagline punchier and emphasize 'shipping'.",
+          "Reorder the projects so the financial app is first.",
+          "Tighten the about section to two paragraphs.",
+          "Add 'open source' to my focus areas.",
+        ].map((s) => (
+          <li
+            key={s}
+            className="rounded-md border border-border bg-background/60 px-3 py-2 text-[12px] leading-relaxed text-foreground/80"
+          >
+            {s}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function ChatInput({
+  onSend,
+  disabled,
+}: {
+  onSend: (text: string) => void;
+  disabled: boolean;
+}) {
+  const [draft, setDraft] = useState("");
+  const ref = useRef<HTMLTextAreaElement>(null);
+
+  function submit() {
+    const t = draft.trim();
+    if (!t || disabled) return;
+    onSend(t);
+    setDraft("");
+    ref.current?.focus();
+  }
+
+  return (
+    <div className="border-t border-border bg-card/60 px-4 py-3">
+      <div className="rounded-2xl border border-border bg-background px-3 py-2 transition-colors focus-within:border-accent/50">
+        <textarea
+          ref={ref}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value.slice(0, MESSAGE_MAX))}
+          onKeyDown={(e) => {
+            if (
+              e.key === "Enter" &&
+              (e.metaKey || e.ctrlKey || !e.shiftKey)
+            ) {
+              e.preventDefault();
+              submit();
+            }
+          }}
+          rows={3}
+          disabled={disabled}
+          placeholder="Tell the agent what to change..."
+          className="block w-full resize-none bg-transparent text-[13px] leading-relaxed text-foreground placeholder:text-muted focus:outline-none disabled:opacity-60"
+        />
+        <div className="mt-1 flex items-center justify-between">
+          <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted">
+            {draft.length}/{MESSAGE_MAX} &middot; Enter to send
+          </span>
+          <button
+            type="button"
+            onClick={submit}
+            disabled={disabled || draft.trim().length === 0}
+            className="inline-flex items-center gap-1.5 rounded-full bg-accent px-3 py-1.5 text-[11px] font-medium text-accent-foreground transition-opacity hover:opacity-90 disabled:opacity-40"
+          >
+            {disabled ? (
+              <Loader2 className="size-3 animate-spin" />
+            ) : (
+              <Send className="size-3" />
+            )}
+            Send
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// File tree + code view (unchanged)
+// ---------------------------------------------------------------------------
 
 type TreeNode =
   | { type: "file"; path: string; name: string }

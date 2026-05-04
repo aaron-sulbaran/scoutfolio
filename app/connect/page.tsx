@@ -5,7 +5,11 @@ import { SiteNav } from "@/components/site-nav";
 import { SiteFooter } from "@/components/site-footer";
 import { ConnectorGrid } from "@/components/connect/connector-grid";
 
-export default async function ConnectPage() {
+export default async function ConnectPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ error?: string }>;
+}) {
   const session = await auth();
   if (!session) {
     redirect("/");
@@ -13,6 +17,8 @@ export default async function ConnectPage() {
   if (!session.user?.onboardingNarrative) {
     redirect("/start");
   }
+  const { error } = await searchParams;
+  const githubConfigError = error === "github-not-configured";
 
   const fullName = session.user?.displayName ?? session.user?.name;
   const firstName = fullName?.split(" ")[0] ?? "you";
@@ -39,7 +45,11 @@ export default async function ConnectPage() {
             </header>
 
             <div className="mt-14">
-              <ConnectorGrid />
+              <ConnectorGrid
+                githubLogin={session.user?.githubLogin}
+                githubConnected={Boolean(session.user?.githubToken)}
+                githubConfigError={githubConfigError}
+              />
             </div>
           </div>
         </main>

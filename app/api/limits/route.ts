@@ -9,6 +9,7 @@ const SURFACE_KEYS: LimiterKey[] = [
   "extractGithub",
   "discover",
   "generate",
+  "edit",
 ];
 
 export async function GET() {

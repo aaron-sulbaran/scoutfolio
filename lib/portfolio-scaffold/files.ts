@@ -82,20 +82,26 @@ next-env.d.ts
 `;
 
 const LAYOUT = `import type { Metadata } from "next";
-import { Instrument_Sans, Instrument_Serif } from "next/font/google";
+import { Fraunces, DM_Sans, IBM_Plex_Mono } from "next/font/google";
 import "./globals.css";
 
-const instrumentSans = Instrument_Sans({
+const fraunces = Fraunces({
   subsets: ["latin"],
-  variable: "--font-instrument-sans",
+  variable: "--font-fraunces",
+  style: ["normal", "italic"],
   display: "swap",
 });
 
-const instrumentSerif = Instrument_Serif({
+const dmSans = DM_Sans({
   subsets: ["latin"],
-  weight: "400",
-  style: ["normal", "italic"],
-  variable: "--font-instrument-serif",
+  variable: "--font-dm-sans",
+  display: "swap",
+});
+
+const ibmMono = IBM_Plex_Mono({
+  subsets: ["latin"],
+  variable: "--font-ibm-mono",
+  weight: ["400", "500"],
   display: "swap",
 });
 
@@ -109,11 +115,9 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={\`\${instrumentSans.variable} \${instrumentSerif.variable} antialiased\`}
+      className={\`\${fraunces.variable} \${dmSans.variable} \${ibmMono.variable} antialiased\`}
     >
-      <body className="min-h-dvh bg-background text-foreground">
-        {children}
-      </body>
+      <body className="min-h-dvh bg-paper text-ink">{children}</body>
     </html>
   );
 }
@@ -122,39 +126,87 @@ export default function RootLayout({
 const GLOBALS_CSS = `@import "tailwindcss";
 
 @theme {
-  --color-background: #FAF8F5;
-  --color-foreground: #1A1A1A;
-  --color-muted: #6B5E70;
-  --color-accent: #3D2D4F;
-  --color-accent-foreground: #FAF8F5;
-  --color-border: #EAE6E0;
-  --color-card: #FDFBF8;
+  --color-paper: #F2EEE5;
+  --color-paper-soft: #ECE7DA;
+  --color-card: #EDE7D9;
+  --color-ink: #14110E;
+  --color-stone: #6E665C;
+  --color-rust: #B5462C;
+  --color-rust-soft: #C8693F;
+  --color-rule: #DCD5C7;
 
-  --font-sans: var(--font-instrument-sans), system-ui, -apple-system, "Segoe UI", sans-serif;
-  --font-serif: var(--font-instrument-serif), "Iowan Old Style", Georgia, serif;
+  --font-display: var(--font-fraunces), "Iowan Old Style", Georgia, serif;
+  --font-body: var(--font-dm-sans), ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: var(--font-ibm-mono), ui-monospace, "SF Mono", Menlo, monospace;
 }
 
 @layer base {
   html { color-scheme: light; }
 
   body {
-    background: var(--color-background);
-    color: var(--color-foreground);
-    font-family: var(--font-sans);
+    background: var(--color-paper);
+    color: var(--color-ink);
+    font-family: var(--font-body);
+    font-feature-settings: "ss01", "cv11";
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
+    background-image:
+      radial-gradient(rgba(20, 17, 14, 0.025) 1px, transparent 1px);
+    background-size: 3px 3px;
   }
 
   ::selection {
-    background: var(--color-accent);
-    color: var(--color-accent-foreground);
+    background: var(--color-rust);
+    color: var(--color-paper);
+  }
+}
+
+@layer utilities {
+  .eyebrow {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--color-stone);
+  }
+
+  .section-numeral {
+    font-family: var(--font-display);
+    font-style: italic;
+    color: var(--color-rust);
+    font-weight: 300;
+    line-height: 1;
+  }
+
+  .drop-cap::first-letter {
+    font-family: var(--font-display);
+    font-style: italic;
+    color: var(--color-rust);
+    font-size: 4.25em;
+    line-height: 0.82;
+    float: left;
+    padding-right: 0.08em;
+    padding-top: 0.04em;
+    font-weight: 400;
+  }
+
+  .hairline {
+    height: 1px;
+    background: var(--color-rule);
+    width: 100%;
+  }
+
+  .rule-rust {
+    height: 2px;
+    background: var(--color-rust);
+    width: 3rem;
   }
 }
 `;
 
 const README = `# PROJECT_NAME
 
-A personal portfolio site, generated for you. Deploy as-is, or treat it as a starter and edit the components to taste.
+A personal portfolio site, generated for you by ScoutFolio. Deploy as-is, or treat it as a starter and edit the components to taste.
 
 ## Run it locally
 
@@ -167,46 +219,47 @@ Open http://localhost:3000 to see your portfolio. Hot reload is on, so edit any 
 
 ## Deploy to Vercel
 
-The fastest path:
-
 \`\`\`bash
 pnpm dlx vercel
 \`\`\`
 
-Follow the prompts. No environment variables are required, no databases to wire up. The whole site is static React Server Components.
+Follow the prompts. No environment variables required, no databases to wire up. The whole site is static React Server Components.
 
 ## Where to edit content
 
-Everything that's about you lives in \`app/components/\`:
+The agent put your content in one place: \`app/data.ts\`. Edit any field there and the site updates. The structure is:
 
-- \`hero.tsx\` — your name, headline, and primary call-to-action
-- \`projects.tsx\` — featured projects, with descriptions
-- \`about.tsx\` — your story, in 2 to 3 paragraphs
-- \`contact.tsx\` — links to email, GitHub, LinkedIn
+- \`name\`, \`primaryRole\`, \`location\` — the hero line
+- \`tagline\` plus \`taglineEmphasis\` — words to italicize get listed in \`taglineEmphasis\`
+- \`intro\` — the short paragraph under your name
+- \`projects[]\` — your work ledger, with \`title\`, \`role\`, \`year\`, \`summary\`, \`stack\`, \`outcome\`, \`link\`, \`featured\`
+- \`about\` — \`headline\`, \`paragraphs[]\`, and a \`sidebar\` with \`basedIn\`, \`focusAreas[]\`, \`currentlyExploring\`
+- \`contact\` — your closing line and any of \`email\`, \`github\`, \`linkedin\`, \`website\`
 
-The composition lives in \`app/page.tsx\`. Reorder, remove, or duplicate sections there.
+The components in \`app/components/\` (\`hero.tsx\`, \`work.tsx\`, \`about.tsx\`, \`contact.tsx\`) read from \`data.ts\` through \`app/page.tsx\`. Layout, palette, and typography live in \`app/globals.css\` and \`app/layout.tsx\`.
 
-## Color tokens
+## Design tokens
 
-The palette is defined as CSS variables in \`app/globals.css\` under the \`@theme\` block:
+Defined in \`app/globals.css\` under \`@theme\`:
 
 \`\`\`css
---color-background: #FAF8F5  /* warm off-white */
---color-foreground: #1A1A1A  /* near-black body text */
---color-muted:      #6B5E70  /* secondary text */
---color-accent:     #3D2D4F  /* deep aubergine, used for emphasis */
---color-card:       #FDFBF8  /* slightly warmer card surface */
---color-border:     #EAE6E0  /* hairline border */
+--color-paper:  #F2EEE5  /* page background, bone */
+--color-ink:    #14110E  /* primary text, warm ink */
+--color-stone:  #6E665C  /* secondary text */
+--color-rust:   #B5462C  /* accent: section numerals, rules, links */
+--color-card:   #EDE7D9  /* secondary surfaces */
+--color-rule:   #DCD5C7  /* hairline borders */
 \`\`\`
 
-Change any variable and Tailwind utilities (\`bg-accent\`, \`text-muted\`, \`border-border\`, etc.) update everywhere. No config file to touch.
+Change a variable, every utility class follows.
 
 ## Typography
 
-Two fonts via \`next/font/google\`:
+Three fonts via \`next/font/google\`:
 
-- Instrument Sans for body text
-- Instrument Serif (italic) for display lines
+- Fraunces (display serif, italic for emphasis)
+- DM Sans (body)
+- IBM Plex Mono (eyebrow labels and metadata)
 
 Swap them in \`app/layout.tsx\` if you prefer something else.
 
@@ -214,13 +267,13 @@ Swap them in \`app/layout.tsx\` if you prefer something else.
 
 - Next.js 16 (App Router)
 - React 19
-- Tailwind CSS 4 (CSS-first config)
+- Tailwind CSS 4 (CSS-first config, no \`tailwind.config.ts\`)
 - TypeScript (strict)
 
-That's it. No runtime dependencies beyond the framework.
+That is it. No runtime dependencies beyond the framework.
 `;
 
-const RAW_FILES: ScaffoldFile[] = [
+const STATIC_FILES: ScaffoldFile[] = [
   { path: "package.json", content: PACKAGE_JSON },
   { path: "tsconfig.json", content: TSCONFIG },
   { path: "next.config.ts", content: NEXT_CONFIG },
@@ -235,7 +288,7 @@ export function buildScaffold(opts: {
   projectName: string;
   title: string;
 }): ScaffoldFile[] {
-  return RAW_FILES.map(({ path, content }) => ({
+  return STATIC_FILES.map(({ path, content }) => ({
     path,
     content: content
       .replace(/PROJECT_NAME/g, opts.projectName)
@@ -243,4 +296,4 @@ export function buildScaffold(opts: {
   }));
 }
 
-export const SCAFFOLD_CSS = GLOBALS_CSS;
+export const SCAFFOLD_GLOBALS_CSS = GLOBALS_CSS;

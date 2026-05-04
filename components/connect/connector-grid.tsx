@@ -22,8 +22,9 @@ import {
   type InventoryItem,
 } from "@/components/connect/inventory-panel";
 import { useLimits } from "@/lib/use-limits";
+import { connectGitHub, disconnectGitHub } from "@/app/actions";
 
-const GENERATED_STORAGE_KEY = "scoutfolio.generated.v1";
+const GENERATED_STORAGE_KEY = "scoutfolio.generated.v2";
 
 type Status =
   | "idle"
@@ -64,7 +65,15 @@ async function parseRateLimit(res: Response): Promise<RateLimitBody | null> {
 
 const INITIAL: SourceState = { status: "idle", statuses: [] };
 
-export function ConnectorGrid() {
+export function ConnectorGrid({
+  githubLogin,
+  githubConnected = false,
+  githubConfigError = false,
+}: {
+  githubLogin?: string;
+  githubConnected?: boolean;
+  githubConfigError?: boolean;
+} = {}) {
   const [github, setGithub] = useState(INITIAL);
   const [resume, setResume] = useState(INITIAL);
   const [url, setUrl] = useState(INITIAL);
@@ -98,7 +107,7 @@ export function ConnectorGrid() {
     url.status === "done";
 
   async function runExtract(
-    source: "url" | "resume",
+    source: "url" | "resume" | "github",
     payload: { url?: string; blobUrl?: string; filename?: string },
     setState: React.Dispatch<React.SetStateAction<SourceState>>
   ) {
@@ -257,6 +266,12 @@ export function ConnectorGrid() {
         data: url.result,
       });
     }
+    if (github.result) {
+      sources.push({
+        source: githubLogin ? `GitHub: ${githubLogin}` : "GitHub",
+        data: github.result,
+      });
+    }
     if (sources.length === 0) {
       setDiscoveryError("Connect at least one source with extracted findings first.");
       return;
@@ -332,7 +347,11 @@ export function ConnectorGrid() {
     const allLinks = [
       ...(resume.result?.notableLinks ?? []),
       ...(url.result?.notableLinks ?? []),
+      ...(github.result?.notableLinks ?? []),
     ];
+    if (!contact.github && githubLogin) {
+      contact.github = `https://github.com/${githubLogin}`;
+    }
     for (const link of allLinks) {
       const u = link.url.toLowerCase();
       if (!contact.github && u.includes("github.com")) contact.github = link.url;
@@ -341,7 +360,10 @@ export function ConnectorGrid() {
     }
 
     const candidateName =
-      resume.result?.title || url.result?.title || undefined;
+      resume.result?.title ||
+      url.result?.title ||
+      github.result?.title ||
+      undefined;
 
     try {
       const res = await fetch("/api/generate-portfolio", {
@@ -370,6 +392,8 @@ export function ConnectorGrid() {
         | {
             files: { path: string; content: string }[];
             previewHtml: string;
+            content: unknown;
+            summary?: string;
             meta: { name: string; title: string };
           }
         | null = null;
@@ -429,49 +453,91 @@ export function ConnectorGrid() {
     }
   }
 
-  function toggleGithub() {
-    setGithub((prev) =>
-      prev.status === "done"
-        ? INITIAL
-        : { status: "done", statuses: ["Mock connection (real GitHub MCP arrives May 4)."] }
-    );
+  function runGithubExtract() {
+    void runExtract("github", {}, setGithub);
   }
 
   return (
     <div>
       <ul className="grid grid-cols-1 gap-4 md:grid-cols-2">
-        {/* GitHub — fake/mock */}
+        {/* GitHub: real OAuth + MCP */}
         <li
           className={`relative rounded-2xl border bg-card p-7 transition-all ${
             github.status === "done"
               ? "border-accent shadow-[0_18px_40px_-24px_rgba(61,45,79,0.4)]"
-              : "border-border hover:border-accent/30"
+              : isInProgress(github)
+                ? "border-accent/50"
+                : "border-border hover:border-accent/30"
           }`}
         >
           <CardHeader
             Icon={Github}
             label="GitHub"
             connected={github.status === "done"}
+            inProgress={isInProgress(github)}
+            filename={githubConnected ? githubLogin : undefined}
           />
           <p className="mt-5 text-sm leading-relaxed text-muted">
-            We&rsquo;ll surface your strongest repos and READMEs.
-            <span className="ml-1 text-[11px] text-muted/60">(MCP wiring lands May 4)</span>
+            We&rsquo;ll list your repos and read READMEs through the official
+            GitHub MCP server.
           </p>
           <RemainingRow snap={limits.extractGithub} />
-          <div className="mt-6">
-            <button
-              type="button"
-              onClick={toggleGithub}
-              className={
-                github.status === "done"
-                  ? "inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-4 py-2 text-xs font-medium text-foreground transition-all hover:border-accent/40"
-                  : "inline-flex items-center gap-1.5 rounded-full bg-accent px-4 py-2 text-xs font-medium text-accent-foreground transition-opacity hover:opacity-90"
-              }
-            >
-              {github.status === "done" ? "Disconnect" : "Connect"}
-              {github.status !== "done" && <ArrowUpRight className="size-3" />}
-            </button>
+          <div className="mt-6 flex items-center gap-2">
+            {!githubConnected && (
+              <form action={connectGitHub}>
+                <button
+                  type="submit"
+                  className="inline-flex items-center gap-1.5 rounded-full bg-accent px-4 py-2 text-xs font-medium text-accent-foreground transition-opacity hover:opacity-90"
+                >
+                  Connect GitHub
+                  <ArrowUpRight className="size-3" />
+                </button>
+              </form>
+            )}
+            {githubConnected && github.status !== "done" && (
+              <button
+                type="button"
+                onClick={runGithubExtract}
+                disabled={isInProgress(github)}
+                className="inline-flex items-center gap-1.5 rounded-full bg-accent px-4 py-2 text-xs font-medium text-accent-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
+              >
+                {isInProgress(github) ? "Extracting..." : "Extract from GitHub"}
+                {!isInProgress(github) && <ArrowRight className="size-3" />}
+              </button>
+            )}
+            {githubConnected && github.status === "done" && (
+              <button
+                type="button"
+                onClick={runGithubExtract}
+                disabled={isInProgress(github)}
+                className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-4 py-2 text-xs font-medium text-foreground transition-all hover:border-accent/40 disabled:opacity-50"
+              >
+                Re-extract
+              </button>
+            )}
+            {githubConnected && (
+              <form action={disconnectGitHub}>
+                <button
+                  type="submit"
+                  className="text-[11px] font-mono uppercase tracking-[0.16em] text-muted hover:text-foreground transition-colors"
+                >
+                  Disconnect
+                </button>
+              </form>
+            )}
           </div>
+          <NarrationPanel statuses={github.statuses} />
+          {github.result && <FindingsView data={github.result} />}
+          {github.status === "limited" && github.rateLimit && (
+            <LimitedRow message={github.rateLimit.message} />
+          )}
+          {github.status === "soft_failed" && github.softMessage && (
+            <SoftFailRow message={github.softMessage} />
+          )}
+          {github.error && <ErrorRow message={github.error} />}
+          {githubConfigError && (
+            <ErrorRow message="GitHub OAuth isn't configured. Set AUTH_GITHUB_ID and AUTH_GITHUB_SECRET in .env.local (and Vercel envs), then restart the dev server." />
+          )}
         </li>
 
         {/* Resume — real Blob upload + extract */}

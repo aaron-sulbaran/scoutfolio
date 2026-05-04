@@ -45,3 +45,18 @@ export async function updateDisplayName(formData: FormData) {
   } as unknown as Parameters<typeof unstable_update>[0]);
   redirect(displayName ? "/settings?saved=name" : "/settings?saved=name-cleared");
 }
+
+export async function connectGitHub() {
+  if (!process.env.AUTH_GITHUB_ID || !process.env.AUTH_GITHUB_SECRET) {
+    redirect("/connect?error=github-not-configured");
+  }
+  await signIn("github", { redirectTo: "/connect" });
+}
+
+export async function disconnectGitHub() {
+  await unstable_update({
+    githubToken: "",
+    githubLogin: "",
+  } as unknown as Parameters<typeof unstable_update>[0]);
+  redirect("/connect");
+}

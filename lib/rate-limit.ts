@@ -26,6 +26,7 @@ const LIMITS = {
   discover: { max: 6, window: "24 h" },
   upload: { max: 10, window: "24 h" },
   generate: { max: 2, window: "24 h" },
+  edit: { max: 15, window: "24 h" },
 } as const;
 
 export type LimiterKey = keyof typeof LIMITS;
@@ -37,6 +38,7 @@ const limiters: Record<LimiterKey, Ratelimit | null> = {
   discover: build("discover"),
   upload: build("upload"),
   generate: build("generate"),
+  edit: build("edit"),
 };
 
 function build(key: LimiterKey): Ratelimit | null {
@@ -222,7 +224,9 @@ export function rateLimitMessage(key: LimiterKey, resetMs: number): string {
             ? "discovery runs"
             : key === "generate"
               ? "portfolio generations"
-              : "uploads";
+              : key === "edit"
+                ? "portfolio edits"
+                : "uploads";
   const resetTime = formatResetTime(resetMs);
   return `You've used your ${max} daily ${verb}. Resets at ${resetTime}.`;
 }

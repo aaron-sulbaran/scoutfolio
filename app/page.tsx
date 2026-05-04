@@ -13,6 +13,7 @@ export default function Home() {
     <>
       <Grain />
       <div className="relative z-[2] flex min-h-dvh flex-col">
+        <JudgeBanner />
         <SiteNav variant="marketing" />
 
         <main className="flex-1">
@@ -25,6 +26,30 @@ export default function Home() {
         <SiteFooter />
       </div>
     </>
+  );
+}
+
+function JudgeBanner() {
+  return (
+    <div className="border-b border-border/60 bg-card/60">
+      <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-6 py-2 text-xs">
+        <p className="text-muted">
+          <span className="mr-2 font-mono text-[10px] uppercase tracking-[0.18em] text-accent">
+            Judges
+          </span>
+          Try ScoutFolio without an account.
+        </p>
+        <Link
+          href="/demo"
+          target="_blank"
+          rel="noopener"
+          className="group inline-flex items-center gap-1.5 whitespace-nowrap text-foreground transition-colors hover:text-accent"
+        >
+          See the demo
+          <ArrowRight className="size-3 transition-transform group-hover:translate-x-0.5" />
+        </Link>
+      </div>
+    </div>
   );
 }
 

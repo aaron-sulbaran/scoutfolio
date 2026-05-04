@@ -28,8 +28,7 @@ The product narrative for hackathon judges leans on **the agent visibly working*
 - `docs/SCOUTFOLIO_PRD.md` — full v1.0 product spec for the May 4 cut. Defines personas, features, data model, success metrics, and scope guardrails (§11.4 "What Not to Build").
 - `docs/SCOUTFOLIO_2HR_DEMO_PRD.md` — narrow scope of the live-event demo build that has already shipped.
 - `docs/SCOUTFOLIO_NEXT_STEPS.md` — active build appendix. Authoritative for current scope (portfolio agent + preview + zip export + onboarding screen). Read this BEFORE any new feature work. Archive when the increment ships and fold contents into the main PRD.
-- `docs/CLAUDE_CODE_PROMPT_PORTFOLIO_AGENT.md` — the focused prompt that drives the current build session.
-- `docs/CLAUDE_CODE_PROMPT_GITHUB_OAUTH_STRETCH.md` — stretch-goal prompt for real GitHub OAuth (use only after portfolio agent ships).
+- `docs/CLAUDE_CODE_PROMPT_GITHUB_MCP.md` — self-contained prompt for shipping the real GitHub MCP integration (OAuth + remote MCP client + extract source). Hand to a fresh Claude Code session.
 - `~/.claude/plans/i-m-building-out-a-flickering-chipmunk.md` — the executed plan file from the initial build, with phase-by-phase outcomes.
 
 **Authority order:** AGENTS.md is authoritative for repo-wide conventions and stable architecture. NEXT_STEPS.md is authoritative for current-increment scope only. Where they overlap on conventions, AGENTS.md wins.
@@ -303,7 +302,7 @@ Known issues / not yet done:
 
 - ⚠️ Preview rendering uses agent-emitted `previewHtml` (full HTML doc with Tailwind CDN) instead of `react-dom/server` against the TSX strings. Documented at the top of `app/api/generate-portfolio/route.ts`. Tradeoff: preview HTML and export TSX are independent strings that should agree visually but aren't byte-identical.
 - ⚠️ Anthropic free-tier rate cap (10k tpm on Sonnet 4.6) drove the switch to Haiku 4.5 for extract/discover. Portfolio generation attempts Sonnet 4.6 because output quality matters more there; swap `MODEL` in `app/api/generate-portfolio/route.ts` to `claude-haiku-4-5` if rate-capped.
-- ⚠️ No GitHub MCP integration yet (visual-only mock card on `/connect`). May 4 work, separate stretch prompt exists.
+- ⚠️ No GitHub MCP integration yet (visual-only mock card on `/connect`). May 4 work, prompt at `docs/CLAUDE_CODE_PROMPT_GITHUB_MCP.md`.
 - ⚠️ No demo mode (PRD §7.11) wired up beyond the placeholder route. (The landing page portfolio examples are illustrative, not the sign-up-free agent walkthrough the PRD describes.)
 
 ## Environment
@@ -333,7 +332,7 @@ Vercel envs:
 
 ## What's next, ranked
 
-1. **Real GitHub OAuth + repo listing.** Stretch prompt exists at `docs/CLAUDE_CODE_PROMPT_GITHUB_OAUTH_STRETCH.md`. Use it before May 4.
+1. **Real GitHub MCP integration.** Self-contained prompt at `docs/CLAUDE_CODE_PROMPT_GITHUB_MCP.md`. Hand to a fresh Claude Code session before May 4.
 2. **Portfolio generator output quality.** Generated portfolios currently produce rudimentary HTML that looks nothing like the illustrative examples on the landing page. Align the generator's output (prompt, scaffold, and validation) to match the visual fidelity of `components/portfolio-examples/portfolios/` (distinct field aesthetics, proper typography, dark-mode SWE variant, editorial structure). This is a trust gap: the landing page promises polish that the actual output doesn't yet deliver.
 3. **Demo mode** (PRD §7.11) wired with a real prebuilt fixture so judges can experience the agent without signing up.
 4. **GitHub data into discovery** (May 4 scope). Once OAuth is live, wire `lib/github-tools.ts` `fetchUserRepos(token)` into `/api/discover` as a parallel finding source.
