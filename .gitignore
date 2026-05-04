@@ -77,6 +77,9 @@ id_ecdsa
 # OS
 Thumbs.db
 
+# Large demo walkthrough (GitHub file limit 100MB; use Blob or CDN + env)
+public/demo/*.mov
+
 # vercel
 .vercel
 

@@ -3,7 +3,9 @@
 import { useRef, useState } from "react";
 import { Play } from "lucide-react";
 
-const VIDEO_SRC = "/demo/walkthrough.mp4";
+const VIDEO_SRC =
+  process.env.NEXT_PUBLIC_DEMO_WALKTHROUGH_URL?.trim() ||
+  "/demo/ScoutFolio-Walkthrough.mov";
 const POSTER_SRC = "/demo/walkthrough-poster.svg";
 
 export function DemoVideo() {
@@ -53,11 +55,15 @@ export function DemoVideo() {
               Walkthrough video coming soon
             </p>
             <p className="max-w-sm text-sm text-foreground">
-              Drop an mp4 at{" "}
+              Host the file outside Git (GitHub rejects files over 100MB). Set{" "}
               <code className="font-mono text-xs text-accent">
-                public/demo/walkthrough.mp4
+                NEXT_PUBLIC_DEMO_WALKTHROUGH_URL
               </code>{" "}
-              to enable playback.
+              to a public video URL, or keep{" "}
+              <code className="font-mono text-xs text-accent">
+                public/demo/ScoutFolio-Walkthrough.mov
+              </code>{" "}
+              locally only (gitignored) for dev.
             </p>
           </div>
         )}

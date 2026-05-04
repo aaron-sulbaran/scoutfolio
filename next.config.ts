@@ -9,6 +9,7 @@ const cspDirectives: Record<string, string[]> = {
     : ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
   "style-src": ["'self'", "'unsafe-inline'"],
   "img-src": ["'self'", "data:", "blob:"],
+  "media-src": ["'self'", "https:"],
   "font-src": ["'self'", "data:"],
   "connect-src": isProd
     ? ["'self'"]

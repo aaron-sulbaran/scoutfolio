@@ -1,11 +1,25 @@
-# Demo video drop point
+# Demo video
 
-The `/demo` page expects a walkthrough video at:
+The `/demo` page plays a walkthrough from `<video src="...">`.
 
-```
-public/demo/walkthrough.mp4
-```
+## Production (recommended)
 
-Drop any mp4 here with that exact filename and it will play on the page. If the file is missing, the player shows a fallback explaining where to put it.
+GitHub rejects files **larger than 100MB**, so do not commit huge `.mov` / `.mp4` files.
 
-Optional: replace `walkthrough-poster.svg` with a JPG/PNG poster frame at the same path (update the import in `components/demo/demo-video.tsx` if you change the extension).
+1. Upload the file to **Vercel Blob** with **public** access (or any CDN).
+2. Set in Vercel project env (and redeploy):
+
+   `NEXT_PUBLIC_DEMO_WALKTHROUGH_URL=https://...`
+
+3. The client reads this at build time via `NEXT_PUBLIC_*`.
+
+## Local dev
+
+- Optional: keep `ScoutFolio-Walkthrough.mov` under `public/demo/` on your machine.  
+  `*.mov` here is **gitignored** so it will not block `git push`.
+- If the env var is unset, the player falls back to  
+  `/demo/ScoutFolio-Walkthrough.mov`.
+
+## Poster
+
+Optional: replace `walkthrough-poster.svg` with a raster poster; if you change the filename, update `POSTER_SRC` in `components/demo/demo-video.tsx`.
